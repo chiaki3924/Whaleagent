@@ -804,6 +804,7 @@ for (const button of document.querySelectorAll('.tab')) {
     if (button.dataset.panel !== 'settings') setModelPickerOpen(false)
     if (button.dataset.panel === 'automation') { void refreshReadingStatus(); void refreshInteractionStatus() }
     if (button.dataset.panel === 'diary') { void refreshDiaryStatus(); void refreshDiaries() }
+    if (button.dataset.panel === 'update') void refreshUpdateStatus()
     notify('')
     window.scrollTo({ top: 0, behavior: 'auto' })
   })
@@ -1498,6 +1499,291 @@ $('open-data-folder').addEventListener('click', async () => {
 
 $('refresh-reports').addEventListener('click', refreshReports)
 
+// ---- 软件更新 ----
+// 界面只负责展示：检查、下载、校验、替换文件全在主进程，这里轮询状态。
+let updateState = null
+let updatePollTimer = null
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`
+  return `${value} B`
+}
+
+function formatSpeed(bytesPerSecond) {
+  const value = Number(bytesPerSecond) || 0
+  if (value <= 0) return '0 KB/s'
+  return `${formatBytes(value)}/s`
+}
+
+function formatRemaining(status) {
+  const speed = Number(status.speed) || 0
+  const { received, total } = status.progress || {}
+  if (!speed || !total || total <= received) return ''
+  const seconds = Math.round((total - received) / speed)
+  if (seconds < 60) return `约 ${seconds} 秒`
+  if (seconds < 3600) return `约 ${Math.round(seconds / 60)} 分钟`
+  return `约 ${(seconds / 3600).toFixed(1)} 小时`
+}
+
+function describeUpdateState(status) {
+  const latest = status.latest
+  switch (status.phase) {
+    case 'unsupported':
+      return { text: status.error || '当前运行方式不支持自动更新。', tone: 'is-error', badge: '不支持' }
+    case 'checking':
+      return { text: '正在检查更新…', tone: 'is-busy', badge: '检查中' }
+    case 'downloading': {
+      const { received, total } = status.progress
+      const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+      // 慢链路下“数字不动”不等于卡死：把速度和预计剩余时间一起显示，
+      // 真的 15 秒没有新字节时明确说“已停滞”。
+      const remaining = formatRemaining(status)
+      const speedText = status.stalled ? '已停滞，正在重试' : formatSpeed(status.speed)
+      return {
+        text: `正在下载 ${latest?.version || ''}：${formatBytes(received)}${total > 0 ? ` / ${formatBytes(total)}` : ''}（${percent}%）· ${speedText}${remaining ? ` · 剩余 ${remaining}` : ''}`,
+        tone: status.stalled ? 'is-error' : 'is-busy',
+        badge: status.stalled ? '停滞' : '下载中',
+      }
+    }
+    case 'ready':
+      return { text: `已下载并校验 ${status.ready?.version || ''}；点「立即重启安装」才会替换程序文件。`, tone: 'is-ok', badge: '待重启' }
+    case 'applying':
+      return { text: '正在退出并安装，随后会自动启动新版本。', tone: 'is-busy', badge: '安装中' }
+    case 'available':
+      return { text: `发现新版本 ${latest?.version || ''}，点「下载并校验」开始下载。`, tone: 'is-ok', badge: '有新版本' }
+    case 'error':
+      return { text: status.error || '更新失败。', tone: 'is-error', badge: '出错' }
+    case 'idle':
+    default:
+      if (status.checkedAt) return { text: status.error || '当前已是最新版本。', tone: 'is-ok', badge: '已是最新' }
+      return { text: '尚未检查更新。', tone: 'is-busy', badge: '尚未检查' }
+  }
+}
+
+function selectedTargetRelease(status) {
+  const version = $('update-target').value
+  if (!version) return null
+  return (status.releases || []).find((release) => release.version === version) || null
+}
+
+function renderUpdateNotes(status) {
+  const list = $('update-notes')
+  list.replaceChildren()
+  const target = selectedTargetRelease(status)
+  const notes = (target?.notes?.length ? target.notes : status.latest?.notes) || []
+  const version = target?.version || status.latest?.version || ''
+  $('update-notes-version').textContent = version || '—'
+  if (!notes.length) {
+    const empty = document.createElement('li')
+    empty.className = 'muted'
+    empty.textContent = status.checkedAt ? '这个版本没有写更新说明。' : '检查更新后显示。'
+    list.append(empty)
+    return
+  }
+  for (const note of notes) {
+    const item = document.createElement('li')
+    item.textContent = note
+    list.append(item)
+  }
+}
+
+function renderUpdateTargets(status) {
+  const select = $('update-target')
+  const previous = select.value
+  select.replaceChildren()
+  const releases = status.releases || []
+  if (!releases.length) {
+    const option = document.createElement('option')
+    option.value = ''
+    option.textContent = status.checkedAt ? '没有可选版本' : '尚未检查'
+    select.append(option)
+    select.disabled = true
+    return
+  }
+  for (const release of releases) {
+    const option = document.createElement('option')
+    option.value = release.version
+    const tags = []
+    if (release.newer) tags.push('新版本')
+    if (release.current) tags.push('当前')
+    if (!release.installable) tags.push('无安装包')
+    option.textContent = `${release.version}${tags.length ? `（${tags.join('、')}）` : ''}`
+    option.disabled = !release.installable
+    select.append(option)
+  }
+  const fallback = releases.find((release) => release.newer && release.installable)?.version
+    || releases.find((release) => release.installable)?.version
+    || ''
+  const keep = releases.some((release) => release.version === previous && release.installable) ? previous : fallback
+  select.value = keep
+  select.disabled = ['checking', 'downloading', 'applying'].includes(status.phase)
+}
+
+function renderUpdateProgress(status) {
+  const card = $('update-progress-card')
+  const busy = status.phase === 'downloading'
+  const ready = status.phase === 'ready'
+  const { received, total } = status.progress
+  const percent = ready ? 100 : total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+  card.classList.toggle('hidden', !busy && !ready)
+  $('update-progress-fill').style.width = `${percent}%`
+  $('update-progress-percent').textContent = `${percent}%`
+  const bar = card.querySelector('.update-progress')
+  bar.setAttribute('aria-valuenow', String(percent))
+  $('update-progress-text').textContent = ready
+    ? `${formatBytes(status.ready?.size || 0)}，已通过 SHA-256 校验。`
+    : busy
+      ? `${formatBytes(received)}${total > 0 ? ` / ${formatBytes(total)}` : ''} · ${status.stalled ? '已停滞，正在重试' : formatSpeed(status.speed)}${formatRemaining(status) ? ` · 剩余 ${formatRemaining(status)}` : ''}`
+      : '等待开始。'
+}
+
+function renderUpdateStatus(status) {
+  if (!status) return
+  updateState = status
+  const view = describeUpdateState(status)
+  const badge = $('update-state-badge')
+  badge.textContent = view.badge
+  badge.classList.toggle('is-busy', view.tone === 'is-busy')
+  badge.classList.toggle('is-ready', view.tone === 'is-ok')
+
+  const line = $('update-status-line')
+  line.textContent = view.text
+  line.classList.toggle('is-error', view.tone === 'is-error')
+  line.classList.toggle('is-ok', view.tone === 'is-ok')
+  line.classList.toggle('is-busy', view.tone === 'is-busy')
+
+  $('update-current-version').textContent = status.currentVersion || '—'
+  $('update-current-note').textContent = status.supported
+    ? '便携版：程序目录与 WhaleagentData 一起移动。'
+    : (status.error || '当前运行方式不支持自动更新。')
+
+  const latest = status.latest
+  $('update-latest-version').textContent = latest ? latest.version : (status.checkedAt ? '无' : '尚未检查')
+  $('update-latest-note').textContent = latest
+    ? [
+      status.updateAvailable ? '可更新。' : (status.phase === 'ready' ? '已下载，等待安装。' : '当前已是最新版本。'),
+      latest.size ? `程序包 ${formatBytes(latest.size)}。` : '',
+      latest.publishedAt ? `发布于 ${new Date(latest.publishedAt).toLocaleString('zh-CN')}。` : '',
+    ].filter(Boolean).join('')
+    : (status.checkedAt ? '没有可用的更新清单。' : '点「检查更新」后才会查询。')
+
+  $('update-folder').textContent = status.updateDir || '—'
+  $('update-logfile').textContent = status.logPath || '安装时写入 apply.log。'
+
+  renderUpdateTargets(status)
+  renderUpdateProgress(status)
+  renderUpdateNotes(status)
+
+  const busy = ['checking', 'downloading', 'applying'].includes(status.phase)
+  $('update-check').disabled = !status.supported || busy
+  $('update-check').textContent = status.phase === 'checking' ? '正在检查…' : '检查更新'
+  $('update-download').disabled = !status.supported || busy || status.phase === 'ready' || !latest
+  $('update-download').textContent = status.phase === 'downloading' ? '正在下载…' : '下载并校验'
+  $('update-apply').disabled = status.phase !== 'ready'
+  $('update-cancel').classList.toggle('hidden', status.phase !== 'downloading')
+  $('update-discard').classList.toggle('hidden', !status.ready)
+}
+
+function stopUpdatePolling() {
+  if (updatePollTimer) clearInterval(updatePollTimer)
+  updatePollTimer = null
+}
+
+function startUpdatePolling() {
+  stopUpdatePolling()
+  updatePollTimer = setInterval(async () => {
+    try {
+      const status = await window.whaleagent.updateStatus()
+      renderUpdateStatus(status)
+      if (status.phase !== 'downloading') stopUpdatePolling()
+    } catch { stopUpdatePolling() }
+  }, 500)
+}
+
+async function refreshUpdateStatus() {
+  try { renderUpdateStatus(await window.whaleagent.updateStatus()) }
+  catch (error) { notify(error.message, true) }
+}
+
+$('update-check').addEventListener('click', async () => {
+  $('update-check').disabled = true
+  $('update-check').textContent = '正在检查…'
+  $('update-status-line').textContent = '正在检查更新…'
+  try {
+    const status = await window.whaleagent.checkUpdate()
+    renderUpdateStatus(status)
+    if (status.phase === 'error') notify(status.error, true)
+    else if (status.phase === 'idle') notify('当前已是最新版本。')
+    else notify(`发现新版本 ${status.latest?.version}：${formatBytes(status.latest?.size || 0)}。`)
+  } catch (error) {
+    notify(error.message, true)
+    await refreshUpdateStatus()
+  }
+})
+
+$('update-download').addEventListener('click', async () => {
+  const version = $('update-target').value || ''
+  $('update-download').disabled = true
+  $('update-download').textContent = '正在下载…'
+  $('update-progress-card').classList.remove('hidden')
+  startUpdatePolling()
+  try {
+    const status = await window.whaleagent.downloadUpdate(version)
+    renderUpdateStatus(status)
+    if (status.phase === 'ready') notify(`更新 ${status.ready?.version} 已下载并通过校验，可以重启安装。`)
+    else if (status.phase !== 'idle') notify(status.error || '下载未完成。', true)
+    else notify(status.error || '已取消下载。')
+  } catch (error) {
+    notify(error.message, true)
+  } finally {
+    stopUpdatePolling()
+    await refreshUpdateStatus()
+  }
+})
+
+$('update-cancel').addEventListener('click', async () => {
+  try {
+    renderUpdateStatus(await window.whaleagent.cancelUpdateDownload())
+    notify('已请求取消下载。')
+  } catch (error) { notify(error.message, true) }
+})
+
+$('update-discard').addEventListener('click', async () => {
+  try {
+    renderUpdateStatus(await window.whaleagent.discardUpdatePackage())
+    notify('已删除下载的更新包。')
+  } catch (error) { notify(error.message, true) }
+})
+
+$('update-apply').addEventListener('click', async () => {
+  $('update-apply').disabled = true
+  try {
+    const status = await window.whaleagent.applyUpdate()
+    renderUpdateStatus(status)
+    if (status.phase === 'applying') notify('正在退出并安装，完成后会自动启动新版本。')
+    else notify(status.error || '安装未开始。', true)
+  } catch (error) {
+    notify(error.message, true)
+  } finally {
+    if (updateState?.phase !== 'applying') $('update-apply').disabled = updateState?.phase !== 'ready'
+  }
+})
+
+$('update-open-folder').addEventListener('click', async () => {
+  try { await window.whaleagent.openUpdateFolder() }
+  catch (error) { notify(error.message, true) }
+})
+
+$('update-open-releases').addEventListener('click', async () => {
+  try { await window.whaleagent.openUpdateReleases() }
+  catch (error) { notify(error.message, true) }
+})
+
+$('update-target').addEventListener('change', () => { if (updateState) renderUpdateNotes(updateState) })
+
 loadSettings()
 loadPrompts()
 refreshDataInfo()
@@ -1507,6 +1793,7 @@ refreshInteractionStatus()
 refreshReadingStatus()
 refreshDiaryStatus()
 refreshDiaries()
+refreshUpdateStatus()
 setInterval(refreshInteractionStatus, 10_000)
 setInterval(refreshReadingStatus, 30_000)
 setInterval(refreshDiaryStatus, 30_000)

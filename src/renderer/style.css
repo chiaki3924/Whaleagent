@@ -520,3 +520,18 @@ details.settings-section[open] > summary::before { content: "▾"; }
   .panel-head { flex-direction: column; }
   .setting-row { flex-wrap: wrap; }
 }
+
+/* ---- 软件更新 ---- */
+.value-mono { flex: 0 0 auto; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--text); }
+.update-progress { position: relative; height: 8px; border-radius: 999px; background: var(--surface-sunken); overflow: hidden; }
+.update-progress span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
+.update-notes { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; line-height: 1.62; color: var(--text-body); }
+.update-notes li { margin: 0; }
+.update-notes li::marker { color: var(--text-muted); }
+#update-target { width: 168px; }
+#update-status-line { margin: 12px 0 0; }
+#update-status-line.is-error { color: var(--danger); }
+#update-status-line.is-ok { color: var(--accent-dark); }
+#update-status-line.is-busy { color: var(--text-muted); }
+#update-state-badge.is-busy { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
+#update-state-badge.is-ready { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }

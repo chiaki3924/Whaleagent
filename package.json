@@ -1,6 +1,6 @@
 {
   "name": "whaleagent",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "description": "Standalone Bilibili reading assistant for Windows",
   "type": "module",
@@ -8,7 +8,10 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "pack:win": "node scripts/pack-win.mjs"
+    "pack:win": "node scripts/pack-win.mjs",
+    "pack:release": "node scripts/pack-release.mjs",
+    "publish:release": "node scripts/pack-release.mjs --publish --notes-file release-notes.md",
+    "smoke:update": "node scripts/update-apply-smoke.mjs"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

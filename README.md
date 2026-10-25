@@ -29,6 +29,7 @@ Standalone Windows desktop application, independent of DeepSeek Harness.
 - Bilibili write operations are limited to replying to received comments and private messages when explicitly enabled, sending a picture alongside a DM reply, liking or favoriting a recently pushed video **only when the owner explicitly asks for it in a DM**, plus the optional report DM to the owner; no dynamic posts, danmaku, follows, or coins are implemented.
 - The agent remembers what it pushed, so DM follow-ups do not lose context. Three things were wrong before 0.11.0: the DM window was only 20 messages, `fetch_session_msgs` returns newest-first so the old `.slice(-20)` discarded the *newest* half, and each report DM is 227–463 characters — in a live session 5 of 20 messages were pushes, squeezing the actual dialogue out of the 4000-char budget. Now the window is 50 messages, order is normalised in code, and a self-sent push DM is collapsed into one line (`[推送 <report>]：title (score) / …`) inside `history`. The authoritative list of “what I pushed” lives in `WhaleagentData/history/pushed-videos.json` and is passed to the model as `recentPushes` (index, BVID, title, score, pushed-at, liked, favorited) — so it survives even when the push DMs have scrolled out of the window. On upgrade the log is rebuilt once from existing automatic reports, so recognition works immediately instead of waiting for the next automatic run.
 - Likes and favorites are opt-in. Automatic reading no longer likes anything: it saves the report and DMs it. When the owner explicitly asks in a DM (“like the first one”, “favorite the DeepSeek video”), the model returns `actions` referencing a `recentPushes` entry, and the app re-validates every BVID against the push log before executing — model-invented BVIDs, videos never pushed, and anything requested through the comment channel are refused. Each action is recorded once in the push log, so repeating the request does not repeat the write. Actions run *after* the reply is sent, and the system prompt forbids claiming “already liked” — without that instruction the model would say it had done the work while returning an empty `actions` array (observed and fixed during testing).
+- A 软件更新 (software update) page checks this repository's GitHub releases on demand, downloads the update package with SHA-256 verification, and installs it through a PowerShell script that overlays program files while leaving `WhaleagentData` untouched. See “Software update” below.
 - AI screening uses the configured OpenAI-compatible endpoint. Bilibili cookies are never sent to that endpoint; its API key is sent only in the HTTP Authorization header, while selected video text, the saved content preference (as a trusted system-prompt section), interaction messages together with their recent conversation context, the talker's public nickname and pictures, saved persona, report-DM titles/reasons, and (for diary generation) the day's saved reports, activity summary, and in-window diary text may be included in the corresponding model request. Bilibili cookies are used for image downloads against Bilibili's own image hosts, and only on the retry that happens when an anonymous fetch is refused.
 
 ## Portable data
@@ -59,6 +60,28 @@ On such a first launch the copied `Local State` is unusable, which would also ma
 
 All new persistent files must be added under `DATA_LAYOUT` in `src/main/app-paths.js`; do not write to `%APPDATA%` or the Documents folder again. See `交接文档.md` → “便携数据目录（0.9.0 新增）” for the full rule.
 
+## Software update
+
+Since 0.12.0 the app can update itself from this repository's GitHub releases. The **软件更新** page sits directly below 提示词 and is entirely user-driven: nothing is checked at startup, nothing is downloaded without a click, and nothing is installed without a second click.
+
+- The check URL is `https://github.com/chiaki3924/Whaleagent/releases/latest/download/whaleagent-update.json`, a static release-asset URL — it does not consume GitHub API quota and needs no token. The release list (for the 目标版本 dropdown) comes from `api.github.com` and is optional: if it fails, the page still shows the latest version.
+- `whaleagent-update.json` is the whole manifest: `schema`, `repository`, `version`, `tag`, `asset`, `size`, `sha256`, `published_at`, `release_notes`. Every field is verified against the running build (repository, asset name, schema, semver, 64-hex digest, size ≥ 1 MB); a manifest that does not match is rejected outright rather than partially trusted. Choosing an older release in the dropdown fetches *that tag's* manifest, so rollbacks go through exactly the same verification.
+- The package (`Whaleagent-win32-x64.zip`, ~135 MB) is streamed to `WhaleagentData\update\` as `*.download`, hashed while it is written, and renamed only after the SHA-256 and size both match. Progress, speed and cancel come from the same stream. A `ready.json` marker records the verified package, so a downloaded update survives a restart and the page reopens in 待重启 state.
+- Installing is delegated to a separate PowerShell process (`WhaleagentData\update\apply-update.ps1`), because the running process cannot replace its own files. It waits for every process under the program directory to exit, extracts the zip into `update\staging` after re-validating every entry name, requires `Whaleagent.exe` and `resources\app.asar`, refuses any package that contains `WhaleagentData`, backs the current program files up to `update\backup-<version>`, then `robocopy`s the staging tree onto the program directory with `/XD <absolute data dir>`. Only files present in the new package are written: **nothing is deleted**, so `WhaleagentData` keeps every report, diary, history file, image, key and setting. The new exe is launched without `-WindowStyle Hidden`, and if it exits within six seconds the backup is copied back and the old version relaunched.
+- Runtime dependencies are exactly what Windows already ships: PowerShell 5.1, `robocopy`, and the bundled bsdtar used at packaging time. No new npm packages, no installer, no NSIS, no `electron-updater`. The apply script is written with a UTF-8 BOM on purpose — PowerShell 5.1 reads BOM-less `.ps1` files in the ANSI code page and turns Chinese string literals into parse errors.
+- Source checkouts (`!app.isPackaged`) and non-Windows platforms get an explanation instead of buttons; in a source checkout the update is `git pull`.
+
+Packaging and publishing:
+
+```bash
+pnpm run pack:win                     # program directory → release/Whaleagent-win32-x64
+pnpm run pack:release                 # → release/Whaleagent-win32-x64.zip + whaleagent-update.json
+GH_TOKEN=... pnpm run publish:release # create the GitHub release and upload both assets
+pnpm run smoke:update                 # real PowerShell run against throwaway folders
+```
+
+`pack-release.mjs` copies the program directory into a temporary staging folder with `WhaleagentData` skipped, so a locally used build can never leak its own reports or encrypted keys into a published archive.
+
 ## User guide
 
 See [USER_GUIDE.md](USER_GUIDE.md) for Windows setup, provider endpoint configuration, model discovery, Bilibili reading and screening workflow, report DM delivery, diary usage, local file locations, and troubleshooting. Provider name, base URL, model name, and API key all start blank; the base URL must be copied from your provider account and is intentionally not guessed.
@@ -83,4 +106,5 @@ The Electron package postinstall downloads its official Windows runtime. pnpm is
 - Non-loopback model endpoints must use HTTPS. Redirects are rejected during the connectivity check.
 - Do not put credentials in the endpoint URL.
 - The renderer can call only the methods explicitly exposed by `src/preload/index.cjs`.
+- Update packages are accepted only when the manifest names this repository, this asset, a semver newer or equal to the requested release, and a size/SHA-256 pair that matches the downloaded bytes. The apply script re-checks every zip entry name, refuses packages containing a `WhaleagentData` directory, and never deletes files in the program directory; it lives under `WhaleagentData\update\` so a rejected or interrupted install cannot corrupt user data.
 - Sanitized diagnostic errors are stored at `<app directory>/WhaleagentData/logs/whaleagent.log` (fallback: `%APPDATA%/whaleagent/WhaleagentData/logs/whaleagent.log`) and rotate at 1 MB. IPC arguments, report bodies, QR images, and renderer console output are not logged.

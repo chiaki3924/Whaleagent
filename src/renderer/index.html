@@ -21,6 +21,7 @@
       <button class="tab" data-panel="automation">自动化</button>
       <button class="tab" data-panel="settings">模型设置</button>
       <button class="tab" data-panel="prompts">提示词</button>
+      <button class="tab" data-panel="update">软件更新</button>
     </nav>
     <section class="account" aria-label="B站账号">
       <strong id="bili-account">尚未登录</strong>
@@ -285,6 +286,46 @@
       <section class="system-prompts" aria-labelledby="system-persona-title">
         <div class="prompt-head"><div><h3 id="system-persona-title">系统人设</h3><p>应用实际发送给模型的系统提示词，随版本固定。我的人设会附加在每条之后，只影响称呼和语气，不改变任务要求与安全限制。</p></div><span class="prompt-badge readonly">只读</span></div>
         <div id="system-prompt-list" class="prompt-list" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <section id="update" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>软件更新</h2><p>从 GitHub 本项目的发行版检查新版本。下载并校验完成后由你决定什么时候重启安装；不会自动安装，也不会改动 WhaleagentData 数据目录。</p></div>
+        <span id="update-state-badge" class="prompt-badge">尚未检查</span>
+      </header>
+
+      <section class="settings-section" aria-labelledby="update-version-title">
+        <div class="section-head"><h3 id="update-version-title">版本</h3><span class="section-tag">点「检查更新」才会查询</span></div>
+        <div class="setting-row"><span class="row-text"><strong>当前版本</strong><small id="update-current-note">读取中…</small></span><span id="update-current-version" class="value-mono">—</span></div>
+        <div class="setting-row"><span class="row-text"><strong>新版本</strong><small id="update-latest-note">尚未检查。</small></span><span id="update-latest-version" class="value-mono">尚未检查</span></div>
+        <div class="setting-row"><span class="row-text"><label for="update-target">目标版本</label><small>默认安装最新版；也可以选更早的发行版重装。旧版本需要带更新清单才能安装。</small></span><select id="update-target" disabled><option value="">尚未检查</option></select></div>
+        <p id="update-status-line" class="footnote" role="status" aria-live="polite">尚未检查更新。</p>
+        <div class="section-actions">
+          <button id="update-check" class="primary" type="button">检查更新</button>
+          <button id="update-download" type="button" disabled>下载并校验</button>
+          <button id="update-apply" class="primary" type="button" disabled>立即重启安装</button>
+          <button id="update-cancel" type="button" class="hidden">取消下载</button>
+          <button id="update-discard" type="button" class="hidden">删除已下载包</button>
+        </div>
+      </section>
+
+      <section id="update-progress-card" class="settings-section hidden" aria-labelledby="update-progress-title">
+        <div class="section-head"><h3 id="update-progress-title">下载进度</h3><span id="update-progress-percent" class="section-tag">0%</span></div>
+        <div class="update-progress" role="progressbar" aria-labelledby="update-progress-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="update-progress-fill"></span></div>
+        <p id="update-progress-text" class="footnote">等待开始。</p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="update-notes-title">
+        <div class="section-head"><h3 id="update-notes-title">更新说明</h3><span id="update-notes-version" class="section-tag">—</span></div>
+        <ul id="update-notes" class="update-notes"><li class="muted">检查更新后显示。</li></ul>
+      </section>
+
+      <section class="settings-section" aria-labelledby="update-files-title">
+        <div class="section-head"><h3 id="update-files-title">更新文件</h3></div>
+        <div class="setting-row"><span class="row-text"><strong>更新文件夹</strong><small id="update-folder">读取中…</small></span><button id="update-open-folder" type="button">打开</button></div>
+        <div class="setting-row"><span class="row-text"><strong>安装日志</strong><small id="update-logfile">安装时写入 apply.log。</small></span><button id="update-open-releases" type="button">查看发行版</button></div>
+        <p class="caution">安装时只覆盖新版本里有的程序文件，WhaleagentData（报告、日记、历史、图片库、密钥、设置）不会被删除或移动；旧版本会先备份到 WhaleagentData\update 下，新版本启动失败会自动回滚。</p>
       </section>
     </section>
 

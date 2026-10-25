@@ -321,3 +321,37 @@ test('打包脚本不把便携数据目录打进 app.asar', async () => {
   assert.ok(wrapper.indexOf('fs.cpSync(DATA_DIR, backupDir') < packAt)
   assert.ok(wrapper.indexOf('fs.cpSync(backupDir, DATA_DIR') > packAt)
 })
+
+test('软件更新页在提示词下方，且只通过主进程检查与安装', async () => {
+  const html = await readRendererFile('index.html')
+  const source = await readRendererFile('renderer.js')
+  const preload = await readFile(new URL('../src/preload/index.cjs', import.meta.url), 'utf8')
+
+  // 菜单位置：提示词之后就是软件更新。
+  assert.match(html, /<button class="tab" data-panel="prompts">提示词<\/button>\s*<button class="tab" data-panel="update">软件更新<\/button>/)
+  assert.match(html, /<section id="update" class="panel hidden">/)
+  for (const id of ['update-check', 'update-download', 'update-apply', 'update-cancel', 'update-discard', 'update-target', 'update-notes', 'update-progress-fill']) {
+    assert.match(html, new RegExp(`id="${id}"`))
+  }
+  // 启动时不自动检查：界面只在切换页面或点按钮时取状态。
+  assert.match(source, /if \(button\.dataset\.panel === 'update'\) void refreshUpdateStatus\(\)/)
+  assert.doesNotMatch(source, /setInterval\(refreshUpdateStatus/)
+  assert.match(preload, /checkUpdate: \(\) => ipcRenderer\.invoke\('update:check'\)/)
+  assert.match(preload, /applyUpdate: \(\) => ipcRenderer\.invoke\('update:apply'\)/)
+  assert.match(source, /await window\.whaleagent\.checkUpdate\(\)/)
+  assert.match(source, /await window\.whaleagent\.applyUpdate\(\)/)
+})
+
+test('更新相关的 IPC、单实例锁与启动恢复都接好了', async () => {
+  const source = await readFile(new URL('../src/main/index.js', import.meta.url), 'utf8')
+  for (const channel of ['update:status', 'update:check', 'update:download', 'update:cancel', 'update:discard', 'update:apply', 'update:open-folder', 'update:open-releases']) {
+    assert.match(source, new RegExp(`handle\\('${channel}'`))
+  }
+  // 两个实例同时更新会互相踩文件。
+  assert.match(source, /app\.requestSingleInstanceLock\(\)/)
+  assert.match(source, /if \(!HAS_SINGLE_INSTANCE\) return/)
+  // 下载完待重启的包要能在重启后恢复。
+  assert.match(source, /void UPDATER\.restore\(\)/)
+  // 下载走 Electron 的 net.fetch，继承系统代理。
+  assert.match(source, /fetchImpl: \(url, init\) => net\.fetch\(url, init\)/)
+})

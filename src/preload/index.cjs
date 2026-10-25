@@ -36,4 +36,12 @@ contextBridge.exposeInMainWorld('whaleagent', Object.freeze({
   searchBiliVideos: (keyword, page, sources) => ipcRenderer.invoke('bili:search', keyword, page, sources),
   analyzeBiliVideos: (input) => ipcRenderer.invoke('bili:analyze', input),
   openBiliVideo: (bvid) => ipcRenderer.invoke('bili:open-video', bvid),
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: (version) => ipcRenderer.invoke('update:download', version),
+  cancelUpdateDownload: () => ipcRenderer.invoke('update:cancel'),
+  discardUpdatePackage: () => ipcRenderer.invoke('update:discard'),
+  applyUpdate: () => ipcRenderer.invoke('update:apply'),
+  openUpdateFolder: () => ipcRenderer.invoke('update:open-folder'),
+  openUpdateReleases: () => ipcRenderer.invoke('update:open-releases'),
 }))

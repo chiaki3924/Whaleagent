@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, net, safeStorage, session, shell } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -33,6 +33,7 @@ import { buildPushLogFromReports, buildPushedVideoPayload, describePushLog, isAu
 import { describeActionOutcome, executeRequestedActions } from './interaction-actions.js'
 import { PERSONA_MAX_CHARS, listSystemPrompts, normalizePersona, personaIsEmpty, readSavedPersona } from './prompts.js'
 import { DATA_DIR_NAME, ensureDataLayout, markProfileReset, migrateLegacyData, profileResetBlocked, resolveDataLayout, seedRuntimeProfile } from './app-paths.js'
+import { RELEASES_PAGE_URL, createUpdater } from './updater.js'
 import {
   DIARY_FILE_NAMES,
   DIARY_KINDS,
@@ -74,6 +75,31 @@ if (DATA_LAYOUT.mode === 'portable' || DATA_LAYOUT.mode === 'custom') {
   })
   app.setPath('userData', DATA_LAYOUT.runtimeDir)
 }
+
+// 单实例：两个实例同时更新会互相踩程序目录里的文件，而且它们共用同一个 WhaleagentData。
+// 后启动的实例直接退出，把已有窗口唤到前面（更新脚本重启新版本时也依赖这条）。
+const HAS_SINGLE_INSTANCE = app.requestSingleInstanceLock()
+if (!HAS_SINGLE_INSTANCE) app.quit()
+else app.on('second-instance', () => {
+  const [window] = BrowserWindow.getAllWindows()
+  if (!window) return
+  if (window.isMinimized()) window.restore()
+  window.focus()
+})
+
+// 软件更新：包放在数据目录下的 update，替换程序文件交给独立的 PowerShell 脚本，
+// 本进程要退出之后文件才会解锁。检查与下载走 Electron 的 net.fetch，继承系统代理设置。
+const UPDATER = createUpdater({
+  programDir: PROGRAM_DIR,
+  dataDir: DATA_LAYOUT.rootDir,
+  currentVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  fetchImpl: (url, init) => net.fetch(url, init),
+  // 下载走 Node 的 tls 并行分片（Chromium 的 HTTP/2 多路复用会把并发压成一条），
+  // 所以代理要单独解析一次交给它。系统代理没配时 resolveProxy 返回 DIRECT。
+  proxyResolver: (url) => session.defaultSession.resolveProxy(url),
+  logger: (level, event, detail) => logDiagnostic(level, event, detail),
+})
 
 const REPORT_DIR = () => DATA_LAYOUT.reportsDir
 const CONFIG_PATH = () => path.join(DATA_LAYOUT.configDir, 'settings.json')
@@ -1459,6 +1485,27 @@ function registerIpc() {
     if (error) throw new Error(error)
     return { ok: true }
   })
+  handle('update:status', () => UPDATER.status())
+  handle('update:check', () => UPDATER.check())
+  handle('update:download', (version) => UPDATER.download({ version: String(version || '') }))
+  handle('update:cancel', () => UPDATER.cancel())
+  handle('update:discard', () => UPDATER.discard())
+  handle('update:apply', async () => {
+    const status = await UPDATER.apply()
+    // 安装脚本在等本进程退出；这里留一点时间把回执送回界面再退出。
+    if (status.phase === 'applying') setTimeout(() => app.quit(), 900)
+    return status
+  })
+  handle('update:open-folder', async () => {
+    await fs.mkdir(UPDATER.updateDirectory(), { recursive: true })
+    const error = await shell.openPath(UPDATER.updateDirectory())
+    if (error) throw new Error(error)
+    return { ok: true }
+  })
+  handle('update:open-releases', async () => {
+    await shell.openExternal(RELEASES_PAGE_URL)
+    return { ok: true }
+  })
   handle('settings:read', async () => {
     const settings = await readSettings()
     return { ...settings, ...modelState(settings) }
@@ -1615,6 +1662,8 @@ async function ensureUsableSafeStorage() {
 }
 
 app.whenReady().then(async () => {
+  // 没有拿到单实例锁的进程已经退出，不要再初始化任何东西。
+  if (!HAS_SINGLE_INSTANCE) return
   process.on('unhandledRejection', (reason) => logDiagnostic('error', 'unhandled-rejection', errorSummary(reason)))
   process.on('uncaughtException', (error) => {
     logDiagnostic('fatal', 'uncaught-exception', errorSummary(error))
@@ -1637,6 +1686,8 @@ app.whenReady().then(async () => {
   }
   registerIpc()
   createWindow()
+  // 恢复上次下载并校验通过、还没安装的更新包：界面启动时就显示「待重启」。
+  void UPDATER.restore()
   configureInteractionMonitor(await readSettings())
   void tickReadingAuto()
   readingAutoTimer = setInterval(() => void tickReadingAuto(), 30_000)
