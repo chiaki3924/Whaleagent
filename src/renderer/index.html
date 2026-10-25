@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'none'; img-src 'self' data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whaleagent</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./renderer.js"></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><h1>Whaleagent</h1><p>B站阅读助手</p></div>
+    <nav aria-label="主导航">
+      <p class="nav-group">日常</p>
+      <button class="tab active" data-panel="report">报告</button>
+      <button class="tab" data-panel="bilibili">发现视频</button>
+      <button class="tab" data-panel="diary">日记</button>
+      <p class="nav-group">配置</p>
+      <button class="tab" data-panel="automation">自动化</button>
+      <button class="tab" data-panel="settings">模型设置</button>
+      <button class="tab" data-panel="prompts">提示词</button>
+    </nav>
+    <section class="account" aria-label="B站账号">
+      <strong id="bili-account">尚未登录</strong>
+      <p id="bili-login-note">扫码凭据仅加密保存在本机。</p>
+      <div class="actions"><button id="bili-login" class="primary">扫码登录</button><button id="bili-logout" class="hidden">退出登录</button></div>
+    </section>
+    <div id="qr-wrap" class="qr-wrap hidden" role="dialog" aria-label="B站扫码登录"><img id="qr-image" alt="B站登录二维码"><span id="qr-status">请使用 B站 手机客户端扫码</span><button id="qr-close" type="button">取消</button></div>
+  </aside>
+
+  <main>
+    <section id="report" class="panel">
+      <header class="panel-head">
+        <div><h2>本地报告</h2><p>自动读取和手动筛选生成的报告都在这里，打开后可以编辑再另存。</p></div>
+        <div class="actions"><button id="refresh-reports" title="刷新报告列表">刷新</button><button id="open-folder" title="打开报告文件夹">打开报告文件夹</button></div>
+      </header>
+      <div class="report-layout">
+        <div id="report-list" class="report-list" aria-live="polite"></div>
+        <div class="report-editor">
+          <div class="report-title-row">
+            <div class="field"><label for="report-title">报告名称</label><input id="report-title" value="我的视频观察" maxlength="100"></div>
+            <button id="save-report" class="primary">另存为报告</button>
+          </div>
+          <label for="report-content">Markdown 内容</label><textarea id="report-content" spellcheck="false"># 视频观察
+
+记录值得进一步阅读的视频与原因。
+</textarea>
+          <p class="field-hint">保存时请使用新名称，已有文件不会被覆盖。</p>
+        </div>
+      </div>
+      <footer class="panel-foot">
+        <p class="footnote">报告保存在程序目录的 WhaleagentData/reports 中，数据随程序文件夹一起移动。</p>
+        <p id="data-location" class="footnote data-location">数据目录：读取中…</p>
+        <button id="open-data-folder" class="link-button" title="打开 WhaleagentData 数据目录">打开数据目录</button>
+      </footer>
+    </section>
+
+    <section id="bilibili" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>发现视频</h2><p>从关键词、关注动态和首页推荐里取候选，勾选最多 3 条交给 AI 筛选。</p></div>
+      </header>
+      <p id="model-setup-notice" class="notice model-setup-notice">要使用 AI 筛选，请先配置模型服务地址、模型名称和 API Key。<button id="open-model-settings" type="button">前往模型设置</button></p>
+      <div class="search-box">
+        <label for="bili-keyword" class="sr-only">搜索关键词</label>
+        <div class="search-row"><input id="bili-keyword" maxlength="80" placeholder="搜索关键词，例如：AI 工具"><button id="bili-search" class="primary">获取候选</button></div>
+        <fieldset class="source-options"><legend>来源</legend><label><input id="source-keyword" type="checkbox" checked> 关键词搜索</label><label><input id="source-following" type="checkbox" checked> 关注动态</label><label><input id="source-homepage" type="checkbox" checked> 首页推荐</label></fieldset>
+        <p class="field-hint">关注和首页来源只读第一页；关键词留空时跳过关键词搜索。</p>
+        <p id="preferences-summary" class="field-hint">内容偏好：未填写。可在【提示词】页的“内容偏好”里告诉 agent 主人想看什么风格。</p>
+      </div>
+      <div id="bili-results" class="results" aria-live="polite"></div>
+      <div id="bili-pagination" class="pagination hidden"><button id="search-prev" type="button">上一页</button><span id="search-page-label">第 1 页</span><button id="search-next" type="button">下一页</button></div>
+      <p class="footnote">内容偏好和所选视频的标题、简介、可用字幕会发送到已配置的模型服务；B站 Cookie 不会发送，原始采集文本不会保存到磁盘。</p>
+      <div class="analyze-row"><span id="selection-count">已选 0/3</span><button id="bili-analyze" class="primary" disabled>AI 筛选并生成报告</button></div>
+    </section>
+
+    <section id="diary" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>日记</h2><p>给主人看的那本，和给自己看的那本。日记只保存在本机。</p></div>
+        <div class="actions"><button id="diary-refresh" type="button">刷新</button><button id="diary-open-folder" type="button">打开日记文件夹</button><button id="diary-write" class="primary" type="button">现在写今天的日记</button></div>
+      </header>
+      <div class="status-strip">
+        <p id="diary-status" class="interaction-status" role="status">正在读取日记状态…</p>
+        <p id="diary-next" class="reading-auto-status">自动写日记未开启。</p>
+      </div>
+      <div class="diary-books">
+        <section class="diary-book" aria-labelledby="diary-public-title">
+          <div class="diary-book-head"><h3 id="diary-public-title">给主人看的日记</h3><span id="diary-public-count" class="muted"></span></div>
+          <div id="diary-public-list" class="diary-list" aria-live="polite"></div>
+        </section>
+        <section class="diary-book" aria-labelledby="diary-private-title">
+          <div class="diary-book-head"><h3 id="diary-private-title">给自己看的日记</h3><span id="diary-private-count" class="muted"></span></div>
+          <div id="diary-private-list" class="diary-list" aria-live="polite"></div>
+        </section>
+      </div>
+      <details class="settings-section diary-settings">
+        <summary><span id="diary-settings-title">日记设置</span><span class="summary-hint">开关、自动写入时间和保留天数</span></summary>
+        <label class="setting-row switch-row"><span class="row-text"><strong>日记总开关</strong></span><input id="diary-enabled" type="checkbox"></label>
+        <label class="setting-row switch-row"><span class="row-text"><strong>每天自动写</strong><small>需要应用保持运行；到点后由 agent 汇总当天的报告和互动记录。</small></span><input id="diary-auto" type="checkbox"></label>
+        <label class="setting-row switch-row"><span class="row-text"><strong>给主人看的那本</strong></span><input id="diary-public" type="checkbox"></label>
+        <label class="setting-row switch-row"><span class="row-text"><strong>给自己看的那本</strong></span><input id="diary-private" type="checkbox"></label>
+        <div class="setting-row"><span class="row-text"><label for="diary-time">自动写日记时间</label></span><input id="diary-time" type="time" value="23:00"></div>
+        <div class="setting-row"><span class="row-text"><label for="diary-retention">保留天数</label><small id="diary-retention-note">只保留最近 7 天；写新日记时自动删除更早的条目，模型也只读取保留窗口内的日记，以节约上下文。</small></span><input id="diary-retention" type="number" min="1" max="365" step="1" value="7"></div>
+        <div class="section-actions"><button id="diary-save" class="primary" type="button">保存日记设置</button></div>
+      </details>
+      <p class="footnote">日记由模型根据当天保存的报告和互动记录生成；API Key、Cookie 和私信原文不会进入日记内容。</p>
+    </section>
+
+    <section id="automation" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>自动化</h2><p>让 agent 在设定的时间窗里自己读视频、发报告、回消息。</p></div>
+      </header>
+
+      <section class="settings-section" aria-labelledby="reading-title">
+        <div class="section-head"><h3 id="reading-title">自动读取</h3><span class="section-tag">修改后自动保存</span></div>
+        <div class="status-strip">
+          <p id="reading-window-status" class="interaction-status" role="status">自动读取未开启：设置时间窗和间隔后生效。</p>
+          <p id="reading-auto-status" class="reading-auto-status" role="status">尚未自动读取。</p>
+          <p id="reading-auto-source" class="reading-auto-status">自动读取来源：关注动态、首页推荐；关键词：无。</p>
+        </div>
+        <div class="setting-row"><span class="row-text"><label for="reading-auto-interval">自动读取间隔（分钟）</label><small>0 表示只手动读取。</small></span><input id="reading-auto-interval" type="number" min="0" max="1440" step="1" value="60"></div>
+        <div class="setting-row"><span class="row-text"><strong id="reading-window-title">自动读取时间窗（默认无）</strong><small>只在这些时段内自动获取候选、AI 筛选并保存报告；手动操作不受限制。</small></span><button id="add-reading-window" type="button">添加时间窗</button></div>
+        <div id="reading-windows" class="interaction-windows"></div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="screen-title">
+        <div class="section-head"><h3 id="screen-title">筛选与投递</h3><span class="section-tag">修改后自动保存</span></div>
+        <label class="setting-row switch-row"><span class="row-text"><strong>跳过没有可读字幕的视频</strong></span><input id="skip-no-subtitle" type="checkbox" checked></label>
+        <div class="setting-row setting-row-wide">
+          <span class="row-text"><label for="title-exclude">标题排除词</label><small>标题包含任意一个词的视频会在调用模型前跳过。中英文逗号分隔，最多 20 个词；清空表示不排除。</small></span>
+          <input id="title-exclude" type="text" maxlength="100" value="666，炸裂，外网，热议，为什么，为何，？" placeholder="用中文或英文逗号分隔，可自由增删">
+        </div>
+        <div class="setting-row"><span class="row-text"><label for="max-age-days">只看最近几天发布的视频</label><small id="age-window-note">只推荐最近 7 天发布的视频；已推荐记录自动保留 8 天（比时间窗多 1 天，保证同一条视频不会重复推荐）。</small></span><input id="max-age-days" type="number" min="0" max="30" step="1" value="7"></div>
+        <label class="setting-row switch-row"><span class="row-text"><strong>报告文件生成后，私信发给主人</strong><small id="report-dm-note">收件人取自【提示词】里的主人UID。推送只发私信、不再顺手点赞；点赞和收藏等主人在私信里明确要求后才执行。</small><small id="report-dm-status" role="status">尚未发送报告私信。</small></span><input id="report-dm-enabled" type="checkbox"></label>
+      </section>
+
+      <section class="settings-section interaction-settings" aria-labelledby="interaction-title">
+        <div class="section-head"><h3 id="interaction-title">自动互动</h3><span class="section-tag">点击保存后生效</span></div>
+        <div class="status-strip">
+          <p id="interaction-status" class="interaction-status" role="status">互动监听默认关闭。</p>
+          <button id="resume-interaction" class="hidden" type="button">手动恢复监听</button>
+        </div>
+        <label class="setting-row switch-row"><span class="row-text"><strong>评论区</strong><small>回复本账号收到的评论和 @ 提醒。</small></span><input id="comments-enabled" type="checkbox"></label>
+        <label class="setting-row switch-row"><span class="row-text"><strong>私信</strong><small>收到私聊时自动回复；主人明确要求点赞/收藏时，只对最近推送过的视频执行。</small></span><input id="dm-enabled" type="checkbox"></label>
+        <div class="setting-row"><span class="row-text"><label for="interaction-interval">监听间隔（分钟）</label><small>0 或留空表示不监听。</small></span><input id="interaction-interval" type="number" min="0" max="1440" step="1" value="0"></div>
+        <div class="setting-row"><span class="row-text"><label for="interaction-daily-limit">每日最大发送数</label><small>评论与私信合计；0 表示不发送。</small></span><input id="interaction-daily-limit" type="number" min="0" max="500" step="1" value="0"></div>
+        <div class="setting-row"><span class="row-text"><strong>互动时间窗（默认无）</strong></span><button id="add-interaction-window" type="button">添加时间窗</button></div>
+        <div id="interaction-windows" class="interaction-windows"></div>
+        <p class="caution">回复由模型生成，并用你的 B站账号发送。每个轮询间隔最多发 1 条；首次启用只建立新消息基线；检测到风控或验证码会自动暂停。私信配图会上传到 B站图床，文字和图片分两条发出，各占 1 次额度。</p>
+        <div class="section-actions"><button id="save-interaction" class="primary">保存互动设置</button></div>
+      </section>
+    </section>
+
+    <section id="settings" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>模型设置</h2><p>每个模型是一份独立档案；首选失败时自动改用备用。</p></div>
+        <span id="model-state-badge" class="prompt-badge">尚未配置</span>
+      </header>
+
+      <section class="settings-card" aria-labelledby="model-list-title">
+        <div class="settings-card-head">
+          <div><h3 id="model-list-title">已添加的模型</h3><p>点击卡片编辑；首选和备用决定调用顺序。</p></div>
+          <button id="add-model" type="button" class="primary">新增模型</button>
+        </div>
+        <div id="model-list" class="model-list" aria-live="polite"></div>
+        <p id="model-list-empty" class="field-hint hidden">还没有添加模型。点击“新增模型”填写供应商、地址和 API Key。</p>
+        <p id="model-chain-note" class="field-hint">尚未添加模型。</p>
+      </section>
+
+      <section id="model-editor" class="settings-card hidden" aria-labelledby="model-editor-title">
+        <div class="settings-card-head">
+          <div><h3 id="model-editor-title">新增模型</h3><p id="model-editor-note">填写连接信息后保存；API Key 只加密保存在本机。</p></div>
+          <button id="close-model-editor" type="button">返回列表</button>
+        </div>
+        <div class="settings-grid">
+          <div class="field">
+            <label for="provider-name">供应商名称</label>
+            <input id="provider-name" type="text" maxlength="60" placeholder="例如：DeepSeek、[OI]、硅基流动" autocomplete="organization">
+          </div>
+          <div class="field">
+            <label for="request-format">请求格式</label>
+            <select id="request-format" aria-describedby="request-format-note">
+              <option value="openai" selected>[OI] 兼容（/chat/completions）</option>
+              <option value="anthropic" disabled>Anthropic Messages（暂未支持）</option>
+              <option value="gemini" disabled>Google Gemini（暂未支持）</option>
+            </select>
+            <p id="request-format-note" class="field-hint">当前版本只实现 [OI] 兼容格式。</p>
+          </div>
+        </div>
+        <div class="field">
+          <label for="base-url">API 地址</label>
+          <input id="base-url" type="url" placeholder="填写服务商提供的 [OI] 兼容 API 地址，例如 https://api.example.com/v1" autocomplete="url">
+          <p class="field-hint">填写到 <code>/v1</code> 这一级；应用会在此地址后追加 <code>/chat/completions</code> 或 <code>/models</code>。</p>
+        </div>
+        <div class="field">
+          <label for="api-key">API Key <span id="key-state" class="muted"></span></label>
+          <input id="api-key" type="password" placeholder="留空则保留已保存的密钥" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label for="model">模型名称</label>
+          <div class="input-with-button">
+            <input id="model" maxlength="128" placeholder="留空，或填写例如 deepseek-v4.1-flash" autocomplete="off" aria-describedby="model-check-status">
+            <button id="check-models" type="button" aria-controls="model-picker" aria-expanded="false">检查模型</button>
+          </div>
+          <p id="model-check-status" class="field-hint" role="status">尚未读取供应商模型列表。</p>
+          <div id="model-picker" class="model-picker hidden">
+            <div class="model-picker-head">
+              <input id="model-filter" type="search" placeholder="筛选模型列表…" aria-label="筛选模型列表" autocomplete="off">
+              <span id="model-count" class="model-picker-count"></span>
+            </div>
+            <div id="model-options" class="model-options" role="listbox" aria-label="供应商模型列表"></div>
+            <p id="model-empty" class="field-hint hidden">没有匹配的模型。</p>
+          </div>
+        </div>
+        <div class="settings-grid">
+          <div class="field">
+            <label for="temperature">温度 <span class="field-badge">0–2.0</span></label>
+            <div class="number-stepper">
+              <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" inputmode="decimal" aria-describedby="temperature-note">
+              <div class="number-stepper-buttons">
+                <button id="temperature-up" type="button" aria-label="温度增加 0.1" title="增加 0.1">▲</button>
+                <button id="temperature-down" type="button" aria-label="温度减少 0.1" title="减少 0.1">▼</button>
+              </div>
+            </div>
+            <p id="temperature-note" class="field-hint">默认 0.7，越低越稳定，越高越发散。</p>
+          </div>
+          <div class="field">
+            <label for="vision-mode">视觉输入能力</label>
+            <select id="vision-mode" aria-describedby="vision-note">
+              <option value="auto" selected>自动检测（推荐）</option>
+              <option value="image">支持图片</option>
+              <option value="text">纯文本</option>
+            </select>
+            <p id="vision-note" class="field-hint">自动检测会参考供应商模型列表中的能力信息；当前筛选请求只发送文字。</p>
+          </div>
+        </div>
+        <div class="section-actions settings-actions">
+          <button id="save-model" class="primary">保存模型</button>
+          <button id="test-model">测试连接</button>
+          <span class="actions-spacer"></span>
+          <button id="delete-api-key" class="danger hidden">删除本机 API Key</button>
+          <button id="delete-model" class="danger hidden">删除这个模型</button>
+        </div>
+        <p id="model-editor-status" class="settings-status" role="status"></p>
+      </section>
+
+      <p id="settings-status" class="settings-status" role="status"></p>
+    </section>
+
+    <section id="prompts" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>提示词</h2><p>人设决定 agent 怎么说话，内容偏好决定它替主人挑什么视频。</p></div>
+      </header>
+      <section class="persona-card" aria-labelledby="my-persona-title">
+        <div class="prompt-head"><div><h3 id="my-persona-title">我的人设</h3><p>身份信息和自定义人设会一起发送给模型；全部留空并保存即恢复中性语气。</p></div><span id="persona-state" class="prompt-badge">尚未设置</span></div>
+        <fieldset class="persona-modules">
+          <legend>身份信息</legend>
+          <div class="persona-grid">
+            <label for="persona-owner-uid">主人UID<input id="persona-owner-uid" inputmode="numeric" maxlength="20" placeholder="例如：12345678" autocomplete="off"></label>
+            <label for="persona-owner-nickname">主人昵称<input id="persona-owner-nickname" maxlength="50" placeholder="例如：鲸鱼" autocomplete="off"></label>
+            <label for="persona-self-uid">自己UID<input id="persona-self-uid" inputmode="numeric" maxlength="20" placeholder="例如：87654321" autocomplete="off"></label>
+            <label for="persona-self-nickname">自己昵称<input id="persona-self-nickname" maxlength="50" placeholder="例如：小鲸" autocomplete="off"></label>
+          </div>
+          <div class="persona-grid persona-grid-three">
+            <label for="persona-real-name">真实名字<input id="persona-real-name" maxlength="80" placeholder="例如：小鲸" autocomplete="off"></label>
+            <label for="persona-owner-title">如何称呼主人<input id="persona-owner-title" maxlength="40" placeholder="例如：主人" autocomplete="off"></label>
+            <label for="persona-self-claim">自称<input id="persona-self-claim" maxlength="40" placeholder="例如：我 / 人家" autocomplete="off"></label>
+          </div>
+        </fieldset>
+        <label for="persona-custom">自定义人设内容</label>
+        <textarea id="persona-custom" class="persona-input" maxlength="2000" placeholder="例如：语气轻松、简短，不用颜文字；不确定的事情先说不确定，不替我作承诺。"></textarea>
+        <div class="persona-foot"><span id="persona-count" class="persona-count">0 / 2000</span><div class="persona-actions"><button id="persona-reset" type="button">还原已保存</button><button id="persona-save" class="primary" type="button" disabled>保存人设</button></div></div>
+        <p id="persona-note" class="persona-note">尚未设置人设；模型将使用中性语气。</p>
+        <p id="persona-error" class="persona-error hidden" role="alert"></p>
+      </section>
+      <section class="persona-card" aria-labelledby="content-preferences-title">
+        <div class="prompt-head"><div><h3 id="content-preferences-title">内容偏好</h3><p>告诉模型主人想看什么风格的内容。只用于视频筛选，不影响自动回复、日记和报告私信的口吻。</p></div><span id="content-preferences-state" class="prompt-badge">未填写</span></div>
+        <label for="content-preferences" class="sr-only">主人想看的内容</label>
+        <textarea id="content-preferences" class="persona-input" maxlength="1200" placeholder="例如：只看硬核技术、深度解析和实测；不喜欢标题党、情绪化吐槽和纯新闻搬运。"></textarea>
+        <div class="persona-foot"><span id="content-preferences-count" class="persona-count">0 / 1200</span><div class="persona-actions"><button id="content-preferences-save" class="primary" type="button" disabled>保存内容偏好</button></div></div>
+        <p id="content-preferences-note" class="persona-note">未填写时，模型只按视频内容判断，并会在报告里注明。</p>
+        <p id="content-preferences-error" class="persona-error hidden" role="alert"></p>
+      </section>
+      <section class="system-prompts" aria-labelledby="system-persona-title">
+        <div class="prompt-head"><div><h3 id="system-persona-title">系统人设</h3><p>应用实际发送给模型的系统提示词，随版本固定。我的人设会附加在每条之后，只影响称呼和语气，不改变任务要求与安全限制。</p></div><span class="prompt-badge readonly">只读</span></div>
+        <div id="system-prompt-list" class="prompt-list" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+</div>
+</body>
+</html>

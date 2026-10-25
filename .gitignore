@@ -1,0 +1,26 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+
+# 本地数据目录（报告、日记、历史、图片库、日志、运行时缓存）
+WhaleagentData/
+data/
+
+# 密钥与 B站 登录态（safeStorage 加密文件）
+secrets/
+*.bin
+model-keys.bin
+bilibili-session.bin
+cookies*.txt
+cookie*.json
+
+# 本机运行时文件
+Local State
+settings.json
+*-state.json
+portable-migration.json
+
+# 本机验证脚本产物（含本机路径与账号 UID）
+scripts/*-result.txt
