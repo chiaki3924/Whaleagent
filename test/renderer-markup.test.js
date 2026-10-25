@@ -312,7 +312,11 @@ test('打包脚本不把便携数据目录打进 app.asar', async () => {
   // 而便携数据目录正好在里面，所以必须先备份再打包、打包后还回去。
   assert.equal(pkg.scripts['pack:win'], 'node scripts/pack-win.mjs')
   const wrapper = await readFile(new URL('../scripts/pack-win.mjs', import.meta.url), 'utf8')
-  assert.match(wrapper, /ignore: \[\/\^\\\/\(test\|release\|WhaleagentData\|scripts\)/)
+  assert.match(wrapper, /ignore: \[\s*\/\^\\\/\(test\|release\|WhaleagentData\|scripts\)/)
+  // 开发文档不进安装包：最终包里的 .md 只有 README / USER_GUIDE / LICENSE / THIRD_PARTY_NOTICES。
+  for (const doc of ['交接文档', '代码说明', 'release-notes']) {
+    assert.match(wrapper, new RegExp(`\\^\\\\/${doc}\\\\.md\\$`))
+  }
   assert.match(wrapper, /appVersion: version/)
   assert.match(wrapper, /overwrite: true/)
   // 这两条是防数据丢失的关键：备份发生在打包之前，还原发生在打包之后（finally 里）。
@@ -354,4 +358,45 @@ test('更新相关的 IPC、单实例锁与启动恢复都接好了', async () =
   assert.match(source, /void UPDATER\.restore\(\)/)
   // 下载走 Electron 的 net.fetch，继承系统代理。
   assert.match(source, /fetchImpl: \(url, init\) => net\.fetch\(url, init\)/)
+})
+
+test('开机启动页在软件更新下方，只有一个滑块开关', async () => {
+  const html = await readRendererFile('index.html')
+  const source = await readRendererFile('renderer.js')
+  // 菜单位置：软件更新之后就是开机启动。
+  assert.match(html, /<button class="tab" data-panel="update">软件更新<\/button>\s*<button class="tab" data-panel="startup">开机启动<\/button>/)
+  assert.match(html, /<section id="startup" class="panel hidden">/)
+  // 滑块开关：开关型 checkbox + role="switch"，且整行可点。初始为 disabled，
+  // 免得在读到真实状态之前让用户按一个还不知道会变成什么的开关。
+  assert.match(html, /<label class="setting-row switch-row">/)
+  assert.match(html, /<input id="startup-enabled" type="checkbox" role="switch" aria-describedby="startup-switch-note" disabled>/)
+  assert.match(source, /toggle\.disabled = startupBusy \|\| !state\.supported \|\| Boolean\(state\.error\)/)
+  // 同一页不能有第二个开关：需求是“一个滑块开关”。
+  assert.equal((html.match(/id="startup-enabled"/g) || []).length, 1)
+  assert.equal((html.match(/role="switch"/g) || []).length, 1)
+  for (const id of ['startup-state-badge', 'startup-status-line', 'startup-refresh', 'startup-command', 'startup-location', 'startup-open-settings']) {
+    assert.match(html, new RegExp(`id="${id}"`))
+  }
+})
+
+test('开机启动的状态与写入都只走主进程，切换后回读确认', async () => {
+  const source = await readRendererFile('renderer.js')
+  const preload = await readFile(new URL('../src/preload/index.cjs', import.meta.url), 'utf8')
+  const main = await readFile(new URL('../src/main/index.js', import.meta.url), 'utf8')
+
+  assert.match(preload, /startupStatus: \(\) => ipcRenderer\.invoke\('startup:status'\)/)
+  assert.match(preload, /setStartupEnabled: \(enabled\) => ipcRenderer\.invoke\('startup:set', enabled === true\)/)
+  assert.match(preload, /openStartupSettings: \(\) => ipcRenderer\.invoke\('startup:open-settings'\)/)
+  for (const channel of ['startup:status', 'startup:set', 'startup:open-settings']) {
+    assert.match(main, new RegExp(`handle\\('${channel}'`))
+  }
+  // 主进程只暴露 createStartupManager 的结果，不在渲染层碰注册表。
+  assert.match(main, /createStartupManager\(\{/)
+  assert.match(source, /if \(button\.dataset\.panel === 'startup'\) void refreshStartupStatus\(\)/)
+  assert.match(source, /await window\.whaleagent\.startupStatus\(\)/)
+  assert.match(source, /await window\.whaleagent\.setStartupEnabled\(enabled\)/)
+  // 失败后要用系统里的真实状态回填，不能把开关停在用户以为成功的位置。
+  assert.match(source, /await refreshStartupStatus\(\)\n\s+\} finally \{\n\s+startupBusy = false/)
+  // 渲染层不写注册表、不直接调用 Electron API。
+  assert.doesNotMatch(source, /setLoginItemSettings|getLoginItemSettings|reg\.exe/)
 })

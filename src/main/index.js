@@ -34,6 +34,7 @@ import { describeActionOutcome, executeRequestedActions } from './interaction-ac
 import { PERSONA_MAX_CHARS, listSystemPrompts, normalizePersona, personaIsEmpty, readSavedPersona } from './prompts.js'
 import { DATA_DIR_NAME, ensureDataLayout, markProfileReset, migrateLegacyData, profileResetBlocked, resolveDataLayout, seedRuntimeProfile } from './app-paths.js'
 import { RELEASES_PAGE_URL, createUpdater } from './updater.js'
+import { createStartupManager } from './startup.js'
 import {
   DIARY_FILE_NAMES,
   DIARY_KINDS,
@@ -98,6 +99,17 @@ const UPDATER = createUpdater({
   // 下载走 Node 的 tls 并行分片（Chromium 的 HTTP/2 多路复用会把并发压成一条），
   // 所以代理要单独解析一次交给它。系统代理没配时 resolveProxy 返回 DIRECT。
   proxyResolver: (url) => session.defaultSession.resolveProxy(url),
+  logger: (level, event, detail) => logDiagnostic(level, event, detail),
+})
+
+// 开机启动：登录项登记在 HKCU 的 Run 下，主进程只做读写与回读校验（细节见 startup.js）。
+// 用 process.execPath 而不是 app.getPath('exe')：打包版两者相同，但前者在开发时也指向
+// 真正被启动的可执行文件，界面上显示的命令行不会骗人。
+const STARTUP = createStartupManager({
+  app,
+  exePath: process.execPath,
+  platform: process.platform,
+  isPackaged: app.isPackaged,
   logger: (level, event, detail) => logDiagnostic(level, event, detail),
 })
 
@@ -1504,6 +1516,14 @@ function registerIpc() {
   })
   handle('update:open-releases', async () => {
     await shell.openExternal(RELEASES_PAGE_URL)
+    return { ok: true }
+  })
+  // 开机启动：状态一律现读注册表，界面打开时不会显示上次缓存的结果。
+  handle('startup:status', () => STARTUP.status())
+  handle('startup:set', (enabled) => STARTUP.setEnabled(enabled === true))
+  // 系统里被安全软件或组策略挡住时，界面只能提示；给一个直达系统启动项设置的入口。
+  handle('startup:open-settings', async () => {
+    await shell.openExternal('ms-settings:startupapps')
     return { ok: true }
   })
   handle('settings:read', async () => {

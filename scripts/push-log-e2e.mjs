@@ -6,7 +6,7 @@
 // 3. 走真实的 buildInteractionPrompt，对比压缩前后的上下文字数。
 //
 // 输出只包含条数、字数、BV 号，**不打印任何私信正文或视频标题**：
-// 这份输出会被贴进交接文档，主人的私聊内容不能进去。
+// 这份输出可能被贴进 issue 或文档，主人的私聊内容不能进去。
 //
 // 用法：node_modules\electron\dist\electron.exe scripts\push-log-e2e.mjs
 import { app, safeStorage } from 'electron'

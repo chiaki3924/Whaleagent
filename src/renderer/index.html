@@ -22,6 +22,7 @@
       <button class="tab" data-panel="settings">模型设置</button>
       <button class="tab" data-panel="prompts">提示词</button>
       <button class="tab" data-panel="update">软件更新</button>
+      <button class="tab" data-panel="startup">开机启动</button>
     </nav>
     <section class="account" aria-label="B站账号">
       <strong id="bili-account">尚未登录</strong>
@@ -326,6 +327,32 @@
         <div class="setting-row"><span class="row-text"><strong>更新文件夹</strong><small id="update-folder">读取中…</small></span><button id="update-open-folder" type="button">打开</button></div>
         <div class="setting-row"><span class="row-text"><strong>安装日志</strong><small id="update-logfile">安装时写入 apply.log。</small></span><button id="update-open-releases" type="button">查看发行版</button></div>
         <p class="caution">安装时只覆盖新版本里有的程序文件，WhaleagentData（报告、日记、历史、图片库、密钥、设置）不会被删除或移动；旧版本会先备份到 WhaleagentData\update 下，新版本启动失败会自动回滚。</p>
+      </section>
+    </section>
+
+    <section id="startup" class="panel hidden">
+      <header class="panel-head">
+        <div><h2>开机启动</h2><p>登录 Windows 后自动打开 Whaleagent。开关直接写入当前用户的启动项，不需要管理员权限，也不会安装服务或计划任务。</p></div>
+        <span id="startup-state-badge" class="prompt-badge">读取中</span>
+      </header>
+
+      <section class="settings-section" aria-labelledby="startup-switch-title">
+        <div class="section-head"><h3 id="startup-switch-title">登录时自动启动</h3><span class="section-tag">切换后立即生效</span></div>
+        <label class="setting-row switch-row">
+          <span class="row-text"><strong>开机时自动启动 Whaleagent</strong><small id="startup-switch-note">开启后，登录 Windows 时会自动打开程序；自动读取、互动监听和日记这些功能也会跟着恢复运行。</small></span>
+          <input id="startup-enabled" type="checkbox" role="switch" aria-describedby="startup-switch-note" disabled>
+        </label>
+        <p id="startup-status-line" class="footnote" role="status" aria-live="polite">正在读取开机启动状态…</p>
+        <div class="section-actions"><button id="startup-refresh" type="button">刷新状态</button></div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="startup-detail-title">
+        <div class="section-head"><h3 id="startup-detail-title">启动项</h3><span class="section-tag">由 Windows 启动项管理</span></div>
+        <div class="setting-row"><span class="row-text"><strong>启动项名称</strong><small>在任务管理器和系统设置里都按这个名字显示。</small></span><span id="startup-item-name" class="value-mono">Whaleagent</span></div>
+        <div class="setting-row setting-row-stack"><span class="row-text"><strong>启动的命令</strong><small id="startup-command-note">开启后登录时执行的就是这一条；路径含空格时已自动加引号。</small></span><span id="startup-command" class="value-mono value-block">读取中…</span></div>
+        <div class="setting-row setting-row-stack"><span class="row-text"><strong>登记位置</strong><small id="startup-location-note">关闭开关会删除这一项，不会留下常驻服务或计划任务。</small></span><span id="startup-location" class="value-mono value-block">读取中…</span></div>
+        <div class="setting-row"><span class="row-text"><strong>系统里的位置</strong><small id="startup-task-manager">任务管理器 → 启动应用；Windows 设置 → 应用 → 启动。</small></span><button id="startup-open-settings" type="button">打开启动设置</button></div>
+        <p class="caution">便携版把整个文件夹搬走或改名后，启动项仍指向旧路径，登录时就找不到程序。此时把开关关掉再打开一次，会按名字改写成本机的新路径，不会越写越多；也可以到「任务管理器 → 启动应用」里删掉旧的 Whaleagent 项。</p>
       </section>
     </section>
 

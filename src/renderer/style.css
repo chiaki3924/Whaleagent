@@ -509,7 +509,7 @@ details.settings-section[open] > summary::before { content: "▾"; }
   .account p { margin: 0; flex: 1 1 200px; }
   .account .actions { margin: 0; }
   .account button { width: auto; }
-  .sidebar nav { grid-auto-flow: column; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow-x: auto; }
+  .sidebar nav { grid-auto-flow: column; grid-template-columns: repeat(8, minmax(0, 1fr)); overflow-x: auto; }
   .nav-group { display: none; }
   .tab { text-align: center; white-space: nowrap; }
   .account { margin-top: 0; }
@@ -535,3 +535,19 @@ details.settings-section[open] > summary::before { content: "▾"; }
 #update-status-line.is-busy { color: var(--text-muted); }
 #update-state-badge.is-busy { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
 #update-state-badge.is-ready { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+
+/* ---- 开机启动 ---- */
+/* 命令行和注册表路径都很长，横排会被挤到单词中间断行（Whaleagent.e / xe"），
+   所以这两行改成上下排，整段占满一行、左对齐。 */
+.setting-row-stack { flex-direction: column; align-items: stretch; gap: 8px; }
+.value-block { display: block; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-sunken); text-align: left; overflow-wrap: anywhere; line-height: 1.6; }
+#startup-state-badge.is-busy { background: var(--surface-sunken); color: var(--text-muted); }
+#startup-state-badge.is-ready { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+#startup-state-badge.is-warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
+#startup-status-line { margin: 12px 0 0; }
+#startup-status-line.is-error { color: var(--danger); }
+#startup-status-line.is-warn { color: var(--warn-text); }
+#startup-status-line.is-ok { color: var(--accent-dark); }
+#startup-status-line.is-busy { color: var(--text-muted); }
+#startup-enabled:disabled { cursor: progress; opacity: .55; }
+#startup-enabled:disabled::before { transition: none; }

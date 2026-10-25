@@ -805,6 +805,7 @@ for (const button of document.querySelectorAll('.tab')) {
     if (button.dataset.panel === 'automation') { void refreshReadingStatus(); void refreshInteractionStatus() }
     if (button.dataset.panel === 'diary') { void refreshDiaryStatus(); void refreshDiaries() }
     if (button.dataset.panel === 'update') void refreshUpdateStatus()
+    if (button.dataset.panel === 'startup') void refreshStartupStatus()
     notify('')
     window.scrollTo({ top: 0, behavior: 'auto' })
   })
@@ -1784,6 +1785,105 @@ $('update-open-releases').addEventListener('click', async () => {
 
 $('update-target').addEventListener('change', () => { if (updateState) renderUpdateNotes(updateState) })
 
+// ---- 开机启动 ----
+// 状态的唯一来源是主进程现读的注册表结果；这里不缓存“用户想开还是想关”，
+// 免得系统里被别的程序或安全软件改过之后界面还在自说自话。
+let startupState = null
+let startupBusy = false
+
+function describeStartupState(state) {
+  if (!state) return { badge: '读取中', text: '正在读取开机启动状态…', tone: 'is-busy' }
+  if (!state.supported) return { badge: '不可用', text: state.reason || '当前运行方式不支持开机启动。', tone: 'is-off' }
+  if (state.error) return { badge: '读取失败', text: state.error, tone: 'is-error' }
+  if (state.enabled) return { badge: '已开启', text: '已登记为登录启动项：下次登录 Windows 时会自动打开 Whaleagent。', tone: 'is-on' }
+  if (state.blockedBySystem) {
+    return {
+      badge: '被系统关闭',
+      text: `启动项还在，但被 Windows 或安全软件关掉了。打开一次开关可以重新启用；也可以到「${state.taskManagerHint || '任务管理器 → 启动应用'}」里手动开启。`,
+      tone: 'is-warn',
+    }
+  }
+  return { badge: '已关闭', text: '未登记为登录启动项；开机后需要自己打开 Whaleagent。', tone: 'is-off' }
+}
+
+function renderStartupState(state) {
+  if (!state) return
+  startupState = state
+  const view = describeStartupState(state)
+  const badge = $('startup-state-badge')
+  badge.textContent = view.badge
+  badge.classList.toggle('is-busy', view.tone === 'is-busy')
+  badge.classList.toggle('is-ready', view.tone === 'is-on')
+  badge.classList.toggle('is-warn', view.tone === 'is-warn')
+
+  const line = $('startup-status-line')
+  line.textContent = view.text
+  // “被系统关闭”是可修的提示，用警告色；真正的读取/写入失败才用报错色。
+  line.classList.toggle('is-error', view.tone === 'is-error')
+  line.classList.toggle('is-warn', view.tone === 'is-warn')
+  line.classList.toggle('is-ok', view.tone === 'is-on')
+  line.classList.toggle('is-busy', view.tone === 'is-busy' || view.tone === 'is-off')
+
+  const toggle = $('startup-enabled')
+  // 状态不可读时禁用开关：让用户去按一个不知道会变成什么结果的开关没有意义。
+  toggle.disabled = startupBusy || !state.supported || Boolean(state.error)
+  toggle.checked = state.enabled === true
+  toggle.setAttribute('aria-checked', String(state.enabled === true))
+  $('startup-refresh').disabled = startupBusy
+  // ms-settings: 是 Windows 专有协议，别的平台上按了只会报错。源码模式在 Windows 上仍然可用，
+  // 所以这里按平台判断，而不是按 supported 判断。
+  $('startup-open-settings').disabled = state.platform !== 'win32'
+
+  $('startup-item-name').textContent = state.itemName || 'Whaleagent'
+  $('startup-command').textContent = state.command || '—'
+  $('startup-location').textContent = state.registryLocation || '—'
+  // 不支持时命令行是空的，别再解释“执行的就是这一条”。
+  $('startup-command-note').textContent = state.command
+    ? '开启后登录时执行的就是这一条；路径含空格时已自动加引号。'
+    : '当前运行方式没有可登记的启动命令。'
+  // 开关下面这句始终描述“打开后会怎样”；不支持的原因只在状态行里说一次，
+  // 否则同一句话会在页面上重复出现两遍。
+  $('startup-switch-note').textContent = '开启后，登录 Windows 时会自动打开程序；自动读取、互动监听和日记这些功能也会跟着恢复运行。'
+}
+
+async function refreshStartupStatus() {
+  try { renderStartupState(await window.whaleagent.startupStatus()) }
+  catch (error) { notify(error.message, true) }
+}
+
+async function toggleStartup(enabled) {
+  if (startupBusy) return
+  startupBusy = true
+  renderStartupState(startupState)
+  $('startup-status-line').textContent = enabled ? '正在写入启动项…' : '正在删除启动项…'
+  try {
+    const state = await window.whaleagent.setStartupEnabled(enabled)
+    renderStartupState(state)
+    if (state.enabled) notify('已开启开机启动：下次登录 Windows 时会自动打开 Whaleagent。')
+    else notify('已关闭开机启动：启动项已删除。')
+  } catch (error) {
+    notify(error.message, true)
+    // 失败时以系统里的真实状态回填，别把开关停在用户以为成功的位置。
+    await refreshStartupStatus()
+  } finally {
+    startupBusy = false
+    renderStartupState(startupState)
+  }
+}
+
+$('startup-enabled').addEventListener('change', (event) => { void toggleStartup(event.target.checked) })
+
+$('startup-refresh').addEventListener('click', async () => {
+  $('startup-refresh').disabled = true
+  await refreshStartupStatus()
+  $('startup-refresh').disabled = false
+})
+
+$('startup-open-settings').addEventListener('click', async () => {
+  try { await window.whaleagent.openStartupSettings() }
+  catch (error) { notify(error.message, true) }
+})
+
 loadSettings()
 loadPrompts()
 refreshDataInfo()
@@ -1794,7 +1894,8 @@ refreshReadingStatus()
 refreshDiaryStatus()
 refreshDiaries()
 refreshUpdateStatus()
+refreshStartupStatus()
 setInterval(refreshInteractionStatus, 10_000)
 setInterval(refreshReadingStatus, 30_000)
 setInterval(refreshDiaryStatus, 30_000)
-window.addEventListener('focus', () => { void refreshReadingStatus() })
+window.addEventListener('focus', () => { void refreshReadingStatus(); if (!startupBusy) void refreshStartupStatus() })

@@ -1,110 +1,82 @@
 # Whaleagent
 
-Standalone Windows desktop application, independent of DeepSeek Harness.
+一个跑在自己电脑上的 B 站阅读助手：替你从关键词、关注动态和首页推荐里找视频，按你的口味挑出值得看的，写成报告；需要时还能替你回复评论和私信、写日记。
 
-## Current slice
+Windows x64 便携版，解压即用，不写注册表（除开机启动开关）、不装服务。所有数据——设置、API Key、登录态、报告、日记——都在程序目录下的 `WhaleagentData\` 里，整个文件夹复制走就能带走。
 
-- Electron shell with context isolation, sandboxed renderer, no Node integration, and a restrictive Content Security Policy.
-- Model settings are a list of independent model profiles. Each saved model is a card showing its provider name, model name, readiness state, and its position in the call chain; clicking a card opens an editor sub-page for that model, and “新增模型” opens the same sub-page for a new one. Up to 8 models can be stored.
-- The list defines two call positions: the primary model is used first, and the fallback model is called only after the primary request itself fails (HTTP error, timeout, unreadable response). A failed primary never silently rewrites the saved settings, and the saved report footer notes when the fallback model produced the analysis.
-- Each model profile collects an optional display-only provider name, the [OI]-compatible base URL, model name, temperature, vision capability, and its own API key. All of them are blank by default so credentials are never sent to an assumed host. The only implemented request format is [OI] Chat Completions.
-- A “检查模型” (check models) button inside the model editor reads the provider's `/models` list with the address and key currently in the form (falling back to that model's saved key), then offers a filterable list for quick model selection. Model entries include a text/image capability badge when the provider exposes modality metadata or the model name is a recognized vision model; choosing an entry only fills the model field, so the user still saves explicitly.
-- Temperature is user-configurable per model from 0 to 2.0 in 0.1 steps (default 0.7) and is applied to video screening, interaction replies, diary writing, and the report-DM one-liner. Vision capability is a three-way choice — auto-detect, supports images, text-only — stored with the model profile; the current screening requests still send text only.
-- API keys use Electron `safeStorage`, one entry per model, and can be replaced or explicitly deleted in the model editor; they are never stored in the plain-text settings file. Upgrading from 0.7.0 migrates the previous single model and single key into the first profile automatically.
-- A 日记 (diary) page keeps two separate diaries: one written to the owner ("给主人看的日记") and one written for the agent itself ("给自己看的日记"). Each day is one `## YYYY-MM-DD` section, newest first, stored as local Markdown under `WhaleagentData/diaries/` next to the executable. Writing can be triggered manually or once per day at a configured time; only the enabled books are written.
-- Diary retention is enforced by code, not by the model: with a retention window of *N* days the app keeps `today-(N-1) .. today` and deletes whole older sections on write, on startup, and when the setting is saved. The diary system prompt states the window and that older entries were already deleted, so the model only ever receives bounded history and is told not to reference or restore it.
-- Local reports can be listed, opened for editing, saved under a new name, or deleted after explicit confirmation. Existing files are never overwritten.
-- Analyzed BVIDs are recorded locally only after a report containing the agent's selected videos is saved; later search results are marked but never automatically hidden. Candidates that were only scored and not selected are not recorded.
-- Search can combine keyword, followed-user video updates, and homepage recommendations; keyword, following, and homepage are all enabled by default. Extra sources are fetched only on the first page.
-- An optional automatic reading schedule runs the whole read-and-screen flow inside user-defined time windows: fetch candidates, skip already-recommended videos, screen up to ten new candidates in code, then let the model pick the three worth recommending and save the report automatically. The interval is configurable, and the manual buttons remain available at any time. **Pushing never likes or favorites anything** — those write operations only happen when the owner explicitly asks for them in a DM (see the interaction bullets below).
-- Screening hard rules run in code before the model: videos without a readable subtitle are skipped by default, and titles containing any exclude word are skipped. The exclude box is pre-filled with a built-in clickbait list (`666`, `炸裂`, `外网`, `热议`, `为什么`, `为何`, `？`) that the user can freely add to, remove from, or rewrite; clearing it disables title exclusion. Both rules apply to automatic and manual analysis; the report footer records how many were skipped for each reason. The rules are configurable in the Bilibili page's screening card and are not part of the persona.
-- Videos from the user's following feed are treated as pre-approved interests: they are ordered first when selecting automatic candidates, marked `fromFollowedUp` in the screening prompt, and labelled “关注动态（已关注 UP 主）” in the report. Only the followed user's own uploads count; forwarded dynamics are filtered out. The model is told to prioritize what is worth watching but still to state gaps honestly and never inflate scores.
-- When enabled, every newly created local report is also delivered as a Bilibili private message to the owner UID from the persona. The message body is a local template digest (report name plus up to three titles, scores, reasons, and links) followed by one optional model-written sentence; the template is sent even when the model is unavailable. Delivery is capped at 20 per day, skips self-messaging and invalid recipients, and never retries automatically.
-- User-controlled interaction monitoring can poll replies and @ notifications, plus private messages; each channel has an independent switch and interval 0 disables polling. Automatic model-generated replies are opt-in, rate-limited, and paused on platform risk challenges.
-- Replies are generated with conversation context: the last 50 messages of a DM session (including the account's own earlier replies) and the full floor of a comment thread. Each entry is labelled `self` or `other` so the model can resolve follow-ups like “and the second point?”, while the trigger message is passed separately so only that one is answered. When a comment floor contains several different people, each speaker gets a stable local label (`对方1`, `对方2`, …) — the original UID is used only to group entries and is never sent to the model service. Context is capped at 20 entries / 500 chars each / 4000 chars total and is never written to disk; diagnostics record only entry counts. When a comment notification carries no comment body, the event is skipped rather than substituting the video title. Message order is normalised in code (`sortMessagesChronologically`) because `fetch_session_msgs` returns newest-first — the previous `.slice(-20)` therefore kept the *oldest* 20 and dropped the newest half.
-- The model is also told who it is talking to. Bilibili's DM session objects carry no nickname for user sessions (`account_info` is only populated for system sessions) and message bodies only have `sender_uid`, so the app resolves each pending talker's public display name through `GET /vc/account/v1/user/cards` (batched, at most 50 UIDs per request — larger batches return an empty array) and passes it as `sender` plus `history[].name`. The nickname is treated as untrusted, speaker-supplied text: it is only used for addressing, never to infer the person's real identity, and `senderNote` explicitly tells the model when no nickname was resolved so it never invents one. A failed lookup degrades to no nickname and never blocks the reply; names are cached in memory for 30 minutes (misses 5 minutes) and diagnostics log only “已取得/未取得”, never the nickname itself.
-- Incoming pictures are understood, not dropped: DM images (`msg_type` 2/6) and comment `content.pictures` are downloaded, downscaled to 1568 px on the long edge as JPEG, and attached to the same request as OpenAI-style `image_url` parts, referenced from the text as `[图片N]`. Only `https` URLs on Bilibili image hosts are accepted, at most 4 images per message. Size limits are two-stage on purpose: a raw image may be up to 20 MB in memory, and the 2 MB per-image / 6 MB total budget is applied *after* compression — phone photos are routinely several MB, so checking the final limit against the original bytes would reject every one of them before the downscaler ever runs. Compression steps down JPEG quality (82→70→60→50→40) and then the edge length when a single pass is not enough. Image type is verified by sniffing the file header, so a CDN answering `image/jpg` or `application/octet-stream` is still accepted while an HTML anti-hotlink page is not; anonymous fetches are tried first and the login cookie is only sent on retry when the CDN asks for it. Whether images are attached at all is decided per model profile by its vision setting (`text` never, `image` always, `auto` tries and falls back) so a text-only endpoint is never sent multimodal content: if the server rejects the multimodal request, the reply is retried once as text-only instead of failing outright. A picture that fails to download is skipped without failing the reply, the log records counts and failure classes (never URLs), and the prompt then tells the model not to invent image content. Image bytes stay in memory for that one request.
-- What the model saw is remembered, so follow-up questions still work: after reading pictures the model returns a one-line description of each, which is cached in memory keyed by a hash of the image URL (200 entries max, 240 chars each). When the same picture shows up again in history it is not re-attached; instead the text `[此前看过的图：…]` carries that description into `history`. Descriptions are never written to disk and are lost on restart.
-- Replies can carry one picture of the agent's own choosing, in DMs only. Images live in `WhaleagentData/images/` and **the file name is the picture's meaning** — the app never reads image content, so no vision model is involved and the library itself is never uploaded. The model receives only `{id, name}` pairs (`availableImages`) and decides whether to attach one at all; it is told to stay silent rather than force a mismatch. Names that say nothing (`IMG_2043`, `DSC01234`, `PXL_…`, `Screenshot …`, `微信图片_…`, `图片1`, bare digits, hashes, or names with too little information) are ignored outright. Comment replies never offer pictures because Bilibili floor replies do not support them, and the app has no “post a new top-level comment” capability. Outbound images need a Bilibili image-host URL — `msg_type=2` rejects anything else with `21037` — so the chosen file is uploaded through `/x/dynamic/feed/draw/upload_bfs` (multipart `file_up` + `category=daily` + `csrf`) right before sending. Text and picture cannot be combined into one DM, so a pictured reply is **two messages and consumes two send-quota slots**; when the quota only covers the text the picture is dropped and the text still goes out, and a failed picture never rolls back a delivered text. Diagnostics record counts only, never file names or URLs.
-- Bilibili write operations are limited to replying to received comments and private messages when explicitly enabled, sending a picture alongside a DM reply, liking or favoriting a recently pushed video **only when the owner explicitly asks for it in a DM**, plus the optional report DM to the owner; no dynamic posts, danmaku, follows, or coins are implemented.
-- The agent remembers what it pushed, so DM follow-ups do not lose context. Three things were wrong before 0.11.0: the DM window was only 20 messages, `fetch_session_msgs` returns newest-first so the old `.slice(-20)` discarded the *newest* half, and each report DM is 227–463 characters — in a live session 5 of 20 messages were pushes, squeezing the actual dialogue out of the 4000-char budget. Now the window is 50 messages, order is normalised in code, and a self-sent push DM is collapsed into one line (`[推送 <report>]：title (score) / …`) inside `history`. The authoritative list of “what I pushed” lives in `WhaleagentData/history/pushed-videos.json` and is passed to the model as `recentPushes` (index, BVID, title, score, pushed-at, liked, favorited) — so it survives even when the push DMs have scrolled out of the window. On upgrade the log is rebuilt once from existing automatic reports, so recognition works immediately instead of waiting for the next automatic run.
-- Likes and favorites are opt-in. Automatic reading no longer likes anything: it saves the report and DMs it. When the owner explicitly asks in a DM (“like the first one”, “favorite the DeepSeek video”), the model returns `actions` referencing a `recentPushes` entry, and the app re-validates every BVID against the push log before executing — model-invented BVIDs, videos never pushed, and anything requested through the comment channel are refused. Each action is recorded once in the push log, so repeating the request does not repeat the write. Actions run *after* the reply is sent, and the system prompt forbids claiming “already liked” — without that instruction the model would say it had done the work while returning an empty `actions` array (observed and fixed during testing).
-- A 软件更新 (software update) page checks this repository's GitHub releases on demand, downloads the update package with SHA-256 verification, and installs it through a PowerShell script that overlays program files while leaving `WhaleagentData` untouched. See “Software update” below.
-- AI screening uses the configured OpenAI-compatible endpoint. Bilibili cookies are never sent to that endpoint; its API key is sent only in the HTTP Authorization header, while selected video text, the saved content preference (as a trusted system-prompt section), interaction messages together with their recent conversation context, the talker's public nickname and pictures, saved persona, report-DM titles/reasons, and (for diary generation) the day's saved reports, activity summary, and in-window diary text may be included in the corresponding model request. Bilibili cookies are used for image downloads against Bilibili's own image hosts, and only on the retry that happens when an anonymous fetch is refused.
+当前版本 **0.13.0**。模型服务用任何兼容 OpenAI `/chat/completions` 的接口，Key 由你自己填。
 
-## Portable data
+## 功能
 
-Since 0.9.0 the app is portable by default. Every file it saves, reads, or generates lives next to the executable:
+| 页面 | 做什么 |
+| --- | --- |
+| 报告 | 本地 Markdown 报告的列表、编辑、另存、删除。自动读取生成的报告会自动落盘。 |
+| 发现视频 | 扫码登录 B 站后，从关键词 / 关注动态 / 首页推荐取候选；勾选后交给模型筛选并生成报告。 |
+| 日记 | 两本日记：给主人看的、给自己看的。可手动补写，也可每天定时自动写，按保留天数自动清理。 |
+| 自动化 | 自动读取（时间窗 + 间隔）与互动监听（评论回复 / @ 提醒 / 私信）的全部开关。 |
+| 模型设置 | 多模型档案，每个模型独立的地址、Key、温度和视觉能力；首选失败自动改用备用。 |
+| 提示词 | 我的人设（称呼、语气）与内容偏好（想看什么）；系统提示词只读展示。 |
+| 软件更新 | 从本项目 GitHub 发行版检查、下载、校验并重启安装。全部手动触发。 |
+| 开机启动 | 一个滑块，决定登录 Windows 后是否自动打开 Whaleagent。 |
 
-```text
-Whaleagent-win32-x64\
-├─ Whaleagent.exe
-└─ WhaleagentData\
-   ├─ config\     settings.json and *-state.json
-   ├─ secrets\    model-keys.bin, bilibili-session.bin (safeStorage encrypted)
-   ├─ history\    analyzed-videos.json, pushed-videos.json (push log)
-   ├─ reports\    generated Markdown reports
-   ├─ diaries\    diary-public.md / diary-private.md
-   ├─ logs\       whaleagent.log
-   ├─ images\     picture library for DM attachments (file name = meaning)
-   └─ runtime\    Electron/Chromium profile and caches
-```
+几个刻意的设计取舍：
 
-The data root is resolved in this order: `WHALEAGENT_DATA_DIR` → `<program dir>\WhaleagentData` → `<default userData>\WhaleagentData`. A real write probe decides whether the program directory is usable; read-only locations such as `Program Files` fall back to the user-data copy, and the report page shows the effective path. In the first two modes Electron's `userData` is redirected to `WhaleagentData\runtime`, so Chromium caches move with the app as well.
+- **代码管硬规则，模型管口味。** 无字幕、标题排除词、发布时间窗、候选条数上限都由代码执行，提示词里不让模型自己判断这些。
+- **写操作要主人明说。** 推送视频只发私信，不点赞。只有你在私信里明确要求，才会对「最近推送过的视频」点赞或收藏，且 BV 必须能在本地推送台账里查到。
+- **不自动安装更新，不自动联网。** 启动时不检查更新；检查、下载、安装三步都要你点。
+- **隐私边界写在代码里。** B 站 Cookie 不发往模型服务，聊天上下文不落盘，诊断日志只记条数与长度，不记正文、昵称和 Key。
 
-Old data under `%APPDATA%\whaleagent` and `Documents\Whaleagent` is copied once on first start (copy-only, never overwrite, sources kept as a backup) and recorded in `config\portable-migration.json`. `Local State` is seeded before `app.setPath('userData')` because Electron's `safeStorage` on Windows keeps its DPAPI-wrapped key there — without it, migrated API keys and Bilibili sessions cannot be decrypted.
+## 下载与运行
 
-Moving the folder to another Windows machine or Windows user keeps reports, diaries, history, and plain settings, but the encrypted secrets cannot be decrypted (DPAPI is user-bound): re-enter the API key and scan the Bilibili QR code again. The app detects this, reports it on the report page, and logs `model-keys-unreadable` / `bili-credential-unreadable` instead of failing every poll.
+1. 从 [Releases](https://github.com/chiaki3924/Whaleagent/releases) 下载 `Whaleagent-win32-x64.zip`，解压到**可写目录**（桌面、D 盘都行，不要放 `Program Files`）。
+2. 双击 `Whaleagent.exe`。不需要安装 Node.js、Python 或 DeepSeek Harness。
+3. 首次启动会在 exe 旁边创建 `WhaleagentData\`。之后升级只替换程序文件，这个文件夹要保留。
 
-On such a first launch the copied `Local State` is unusable, which would also make `safeStorage` refuse to encrypt *new* keys. The main process detects `safeStorage.isEncryptionAvailable() === false`, renames the file to `Local State.unusable-<timestamp>`, records `config/profile-reset.json` (the marker also stops the old profile from being seeded back, which would loop), and relaunches once so Electron creates a key for the current Windows user. New keys can then be saved normally; the report page shows `encryptionAvailable` and warns if system encryption is still unavailable.
+SmartScreen 可能提示未知发布者——当前构建没有代码签名。发行版里另有 `whaleagent-update.json`，其中记录了压缩包的大小与 SHA-256，可用来核对下载是否完整。
 
-All new persistent files must be added under `DATA_LAYOUT` in `src/main/app-paths.js`; do not write to `%APPDATA%` or the Documents folder again. See `交接文档.md` → “便携数据目录（0.9.0 新增）” for the full rule.
+## 首次使用
 
-## Software update
+1. **模型设置** → 新增模型 → 填 API 地址（到 `/v1` 这一级）、模型名称、API Key → 保存 → 测试连接。
+2. **左侧账号区** → 扫码登录 B 站。
+3. **提示词** → 填内容偏好和称呼方式（可选，但直接影响筛选质量）。
+4. **发现视频** → 获取候选 → 勾选 1–3 条 → AI 筛选并生成报告。
 
-Since 0.12.0 the app can update itself from this repository's GitHub releases. The **软件更新** page sits directly below 提示词 and is entirely user-driven: nothing is checked at startup, nothing is downloaded without a click, and nothing is installed without a second click.
+详细步骤见 [USER_GUIDE.md](USER_GUIDE.md)。
 
-- The check URL is `https://github.com/chiaki3924/Whaleagent/releases/latest/download/whaleagent-update.json`, a static release-asset URL — it does not consume GitHub API quota and needs no token. The release list (for the 目标版本 dropdown) comes from `api.github.com` and is optional: if it fails, the page still shows the latest version.
-- `whaleagent-update.json` is the whole manifest: `schema`, `repository`, `version`, `tag`, `asset`, `size`, `sha256`, `published_at`, `release_notes`. Every field is verified against the running build (repository, asset name, schema, semver, 64-hex digest, size ≥ 1 MB); a manifest that does not match is rejected outright rather than partially trusted. Choosing an older release in the dropdown fetches *that tag's* manifest, so rollbacks go through exactly the same verification.
-- The package (`Whaleagent-win32-x64.zip`, ~135 MB) is streamed to `WhaleagentData\update\` as `*.download`, hashed while it is written, and renamed only after the SHA-256 and size both match. Progress, speed and cancel come from the same stream. A `ready.json` marker records the verified package, so a downloaded update survives a restart and the page reopens in 待重启 state.
-- Installing is delegated to a separate PowerShell process (`WhaleagentData\update\apply-update.ps1`), because the running process cannot replace its own files. It waits for every process under the program directory to exit, extracts the zip into `update\staging` after re-validating every entry name, requires `Whaleagent.exe` and `resources\app.asar`, refuses any package that contains `WhaleagentData`, backs the current program files up to `update\backup-<version>`, then `robocopy`s the staging tree onto the program directory with `/XD <absolute data dir>`. Only files present in the new package are written: **nothing is deleted**, so `WhaleagentData` keeps every report, diary, history file, image, key and setting. The new exe is launched without `-WindowStyle Hidden`, and if it exits within six seconds the backup is copied back and the old version relaunched.
-- Runtime dependencies are exactly what Windows already ships: PowerShell 5.1, `robocopy`, and the bundled bsdtar used at packaging time. No new npm packages, no installer, no NSIS, no `electron-updater`. The apply script is written with a UTF-8 BOM on purpose — PowerShell 5.1 reads BOM-less `.ps1` files in the ANSI code page and turns Chinese string literals into parse errors.
-- Source checkouts (`!app.isPackaged`) and non-Windows platforms get an explanation instead of buttons; in a source checkout the update is `git pull`.
+## 开发
 
-Packaging and publishing:
-
-```bash
-pnpm run pack:win                     # program directory → release/Whaleagent-win32-x64
-pnpm run pack:release                 # → release/Whaleagent-win32-x64.zip + whaleagent-update.json
-GH_TOKEN=... pnpm run publish:release # create the GitHub release and upload both assets
-pnpm run smoke:update                 # real PowerShell run against throwaway folders
-```
-
-`pack-release.mjs` copies the program directory into a temporary staging folder with `WhaleagentData` skipped, so a locally used build can never leak its own reports or encrypted keys into a published archive.
-
-## User guide
-
-See [USER_GUIDE.md](USER_GUIDE.md) for Windows setup, provider endpoint configuration, model discovery, Bilibili reading and screening workflow, report DM delivery, diary usage, local file locations, and troubleshooting. Provider name, base URL, model name, and API key all start blank; the base URL must be copied from your provider account and is intentionally not guessed.
-
-## Development
-
-Requires Node.js 22+ and pnpm 11+.
+需要 Node.js 22+ 和 pnpm 11+。
 
 ```powershell
 pnpm install
-pnpm start
-pnpm test
-pnpm pack:win
+pnpm start          # 开发态运行
+pnpm test           # 446 项单元测试（node --test）
+pnpm pack:win       # 打包到 release/Whaleagent-win32-x64
+pnpm pack:release   # 出更新包 + 更新清单
 ```
 
-The project uses pnpm's hoisted node-linker so Electron Packager can resolve and prune production dependencies. The portable x64 app directory is written to `release/Whaleagent-win32-x64`; launch `Whaleagent.exe` from that folder. On first launch it creates `WhaleagentData\` next to the exe, and `pack:win` ignores that folder so local data never ends up inside `app.asar`. The package contains the runtime and does not require DeepSeek Harness or Node.js to be installed.
+项目用 pnpm 的 hoisted node-linker，这样 Electron Packager 能正常解析和裁剪生产依赖。运行期只有 `qrcode` 一个依赖，其余全部是 Node 与 Windows 自带能力（PowerShell、robocopy、tar）。
 
-The Electron package postinstall downloads its official Windows runtime. pnpm is configured to permit only Electron's install script.
+改代码前请读 [代码说明.md](代码说明.md)，那里有模块职责、IPC 契约和一份踩坑清单——不少坑是实测踩出来的，重复踩一次的代价不低。
 
-## Security notes
+## 文档
 
-- Non-loopback model endpoints must use HTTPS. Redirects are rejected during the connectivity check.
-- Do not put credentials in the endpoint URL.
-- The renderer can call only the methods explicitly exposed by `src/preload/index.cjs`.
-- Update packages are accepted only when the manifest names this repository, this asset, a semver newer or equal to the requested release, and a size/SHA-256 pair that matches the downloaded bytes. The apply script re-checks every zip entry name, refuses packages containing a `WhaleagentData` directory, and never deletes files in the program directory; it lives under `WhaleagentData\update\` so a rejected or interrupted install cannot corrupt user data.
-- Sanitized diagnostic errors are stored at `<app directory>/WhaleagentData/logs/whaleagent.log` (fallback: `%APPDATA%/whaleagent/WhaleagentData/logs/whaleagent.log`) and rotate at 1 MB. IPC arguments, report bodies, QR images, and renderer console output are not logged.
+- [USER_GUIDE.md](USER_GUIDE.md) —— 用户指南：每一页怎么用、数据存在哪、常见问题。
+- [交接文档.md](交接文档.md) —— 当前版本的功能与行为约定，按页面组织。
+- [代码说明.md](代码说明.md) —— 实现分层、模块职责、IPC、数据结构、踩坑清单。
+- [release-notes.md](release-notes.md) —— 本版本发行说明（发版脚本读取）。
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) —— 第三方代码与许可。
+
+## 安全与边界
+
+- 非本机模型地址必须 HTTPS；检查连接时拒绝重定向；凭据不允许写进 URL。
+- 渲染层不能直接发网络请求（CSP `connect-src 'none'`），只能调用 `src/preload/index.cjs` 显式暴露的方法。
+- 更新包只接受「本项目 + 指定文件名 + 大小与 SHA-256 匹配」的包；安装脚本只覆盖、不删除，数据目录被排除在复制之外，包内混进 `WhaleagentData` 直接拒绝安装。
+- 开机启动只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Whaleagent` 一个值，不需要管理员权限，关掉开关即删除。
+- 诊断日志在 `WhaleagentData\logs\whaleagent.log`，1 MB 轮转，写入前会脱敏 Cookie、Key、Bearer、URL 与 data URL。
+
+应用不是 B 站或任何模型供应商的官方产品。请遵守平台规则，并自行保管好 API Key。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。B 站 WBI 签名表与扫码流程参考了两个 MIT 项目，许可全文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

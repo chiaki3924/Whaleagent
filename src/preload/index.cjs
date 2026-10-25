@@ -44,4 +44,7 @@ contextBridge.exposeInMainWorld('whaleagent', Object.freeze({
   applyUpdate: () => ipcRenderer.invoke('update:apply'),
   openUpdateFolder: () => ipcRenderer.invoke('update:open-folder'),
   openUpdateReleases: () => ipcRenderer.invoke('update:open-releases'),
+  startupStatus: () => ipcRenderer.invoke('startup:status'),
+  setStartupEnabled: (enabled) => ipcRenderer.invoke('startup:set', enabled === true),
+  openStartupSettings: () => ipcRenderer.invoke('startup:open-settings'),
 }))

@@ -65,8 +65,15 @@ try {
     appVersion: version,
     ...(electronZipDir ? { electronZipDir } : {}),
     // 不把测试、输出目录本身、便携数据目录和开发期脚本（含它们写出的结果文件）打进 asar。
-    // release-notes.md 只给发版脚本读，不进最终包。
-    ignore: [/^\/(test|release|WhaleagentData|scripts)(\/|$)/, /^\/交接文档\.md$/, /^\/release-notes\.md$/],
+    // 开发文档也不进最终包：交接文档.md 与 代码说明.md 是给维护者看的，
+    // release-notes.md 只给发版脚本读。最终包里的 .md 只有 README / USER_GUIDE /
+    // LICENSE / THIRD_PARTY_NOTICES 四份。
+    ignore: [
+      /^\/(test|release|WhaleagentData|scripts)(\/|$)/,
+      /^\/交接文档\.md$/,
+      /^\/代码说明\.md$/,
+      /^\/release-notes\.md$/,
+    ],
   })
   console.log(`打包完成 → ${outputPath}`)
 } catch (error) {
