@@ -31,6 +31,13 @@ export function normalizeInteractionConfig(value) {
   return normalizeInteractionSettings(value)
 }
 
+export const WINDOW_CLOSE_ACTIONS = Object.freeze(['ask', 'tray', 'quit'])
+
+export function normalizeWindowConfig(value) {
+  const action = String(value?.closeAction ?? '').trim()
+  return { closeAction: WINDOW_CLOSE_ACTIONS.includes(action) ? action : 'ask' }
+}
+
 export function isModelReady(settings) {
   if (settings?.modelReady === true) return true
   if (Array.isArray(settings?.models)) {

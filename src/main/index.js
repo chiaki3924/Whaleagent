@@ -1,9 +1,9 @@
-import { app, BrowserWindow, ipcMain, nativeImage, net, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, net, safeStorage, session, shell } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { validateReport, validateReportName, normalizeReportMetadata, normalizePreferences, PREFERENCE_MAX_CHARS, normalizeInteractionConfig } from './validation.js'
+import { validateReport, validateReportName, normalizeReportMetadata, normalizePreferences, PREFERENCE_MAX_CHARS, normalizeInteractionConfig, normalizeWindowConfig } from './validation.js'
 import { beginQrLogin, pollQrLogin, getAccountStatus, searchVideos, discoverVideos, fetchVideoForAnalysis, bilibiliCookieHeader, likeVideo, favoriteVideo } from './bilibili.js'
 import { analyzeVideosWithModel, generateInteractionReplyDetailed, generateDiariesWithModel, generateReportDmLine } from './model.js'
 import { fetchCommentTriggers, fetchDmTriggers, sendCommentReply, sendPrivateMessage, sendPrivateImageToTalker, sendPrivateMessageTo, uploadImageToBilibili } from './interaction-bilibili.js'
@@ -82,11 +82,17 @@ if (DATA_LAYOUT.mode === 'portable' || DATA_LAYOUT.mode === 'custom') {
 const HAS_SINGLE_INSTANCE = app.requestSingleInstanceLock()
 if (!HAS_SINGLE_INSTANCE) app.quit()
 else app.on('second-instance', () => {
-  const [window] = BrowserWindow.getAllWindows()
-  if (!window) return
-  if (window.isMinimized()) window.restore()
-  window.focus()
+  showMainWindow()
 })
+
+// 窗口与托盘：关闭行为记在 settings.json 的 window.closeAction，未设置时每次询问。
+// isQuitting 区分「用户主动关闭窗口」和「应用真的要退出」（托盘退出、更新安装、系统关机），
+// 后者绝不能被关闭询问拦下来。
+let mainWindow = null
+let tray = null
+let isQuitting = false
+let closePromptOpen = false
+let windowCloseAction = 'ask'
 
 // 软件更新：包放在数据目录下的 update，替换程序文件交给独立的 PowerShell 脚本，
 // 本进程要退出之后文件才会解锁。检查与下载走 Electron 的 net.fetch，继承系统代理设置。
@@ -308,9 +314,10 @@ async function readSettings() {
       diary: readDiaryConfig(data.diary),
       persona: readSavedPersona(data.persona),
       personaUpdatedAt: personaUpdatedAt && Number.isFinite(personaUpdatedAt.getTime()) ? personaUpdatedAt.toISOString() : '',
+      window: normalizeWindowConfig(data.window),
     }
   } catch {
-    return { models: [], primaryModelId: '', fallbackModelId: '', modelReady: false, providerName: '', baseUrl: '', requestFormat: 'openai', model: '', temperature: DEFAULT_TEMPERATURE, visionMode: 'auto', hasApiKey: false, preferences: '', interaction: normalizeInteractionConfig({}), reading: normalizeReadingConfig({}), readingLastRead: normalizeReadingLastRead({}), screen: normalizeScreenConfig({}), reportDm: normalizeReportDmConfig({}), diary: normalizeDiaryConfig({}), persona: '', personaUpdatedAt: '' }
+    return { models: [], primaryModelId: '', fallbackModelId: '', modelReady: false, providerName: '', baseUrl: '', requestFormat: 'openai', model: '', temperature: DEFAULT_TEMPERATURE, visionMode: 'auto', hasApiKey: false, preferences: '', interaction: normalizeInteractionConfig({}), reading: normalizeReadingConfig({}), readingLastRead: normalizeReadingLastRead({}), screen: normalizeScreenConfig({}), reportDm: normalizeReportDmConfig({}), diary: normalizeDiaryConfig({}), persona: '', personaUpdatedAt: '', window: normalizeWindowConfig({}) }
   }
 }
 
@@ -377,6 +384,7 @@ async function writeConfig(settings) {
     diary: normalizeDiaryConfig(settings?.diary),
     persona: readSavedPersona(settings?.persona),
     personaUpdatedAt: String(settings?.personaUpdatedAt || ''),
+    window: normalizeWindowConfig(settings?.window),
   }
   await fs.mkdir(path.dirname(CONFIG_PATH()), { recursive: true })
   await fs.writeFile(CONFIG_PATH(), JSON.stringify(payload, null, 2), { mode: 0o600 })
@@ -467,11 +475,25 @@ async function saveSettings(input) {
   const screen = input?.screen === undefined ? existing.screen : normalizeScreenConfig(input.screen)
   const reportDm = input?.reportDm === undefined ? existing.reportDm : normalizeReportDmConfig(input.reportDm)
   const personaUpdatedAt = input?.persona === undefined ? existing.personaUpdatedAt : (personaIsEmpty(persona) ? '' : new Date().toISOString())
+  const windowConfig = input?.window === undefined ? existing.window : normalizeWindowConfig(input.window)
   const generation = ++interactionGeneration
-  await writeConfig({ ...existing, preferences, interaction, reading, readingLastRead, screen, reportDm, diary, persona, personaUpdatedAt })
+  await writeConfig({ ...existing, preferences, interaction, reading, readingLastRead, screen, reportDm, diary, persona, personaUpdatedAt, window: windowConfig })
   const saved = await readSettings()
+  windowCloseAction = saved.window.closeAction
   configureInteractionMonitor(saved, generation)
   return saved
+}
+
+async function saveWindowCloseAction(action) {
+  const next = normalizeWindowConfig({ closeAction: action })
+  const existing = await readSettings()
+  if (next.closeAction === existing.window.closeAction) {
+    windowCloseAction = next.closeAction
+    return
+  }
+  await writeConfig({ ...existing, window: next })
+  windowCloseAction = next.closeAction
+  logDiagnostic('info', 'window-close-action-saved', next.closeAction)
 }
 
 function promptState(settings) {
@@ -1634,12 +1656,24 @@ function createWindow() {
     minWidth: 760,
     minHeight: 620,
     backgroundColor: '#f3f5f7',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(APP_DIR, 'src', 'preload', 'index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+  mainWindow = win
+  // 应用菜单已在 whenReady 里整体移除；这里再收一次窗口菜单栏，避免 Alt 唤出。
+  win.removeMenu()
+  win.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    void handleWindowClose(win)
+  })
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
   })
   const rendererPath = path.join(APP_DIR, 'src', 'renderer', 'index.html')
   const rendererUrl = pathToFileURL(rendererPath).href
@@ -1654,6 +1688,103 @@ function createWindow() {
     if (target !== rendererUrl) event.preventDefault()
   })
   win.loadFile(rendererPath)
+}
+
+// 托盘图标优先用程序自身的图标（打包后是 Whaleagent.exe，开发时是 electron.exe）；
+// 读不到时用内嵌的 16/32 像素蓝底白 W，保证托盘不会是一块空白。
+const TRAY_ICON_16 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAARUlEQVR4nGNgoAUQj533HxsmWyNRBhGrGachMAkQwKYBXRyn7cQagGIITQzARQ8BA4jVjDcmKEoHdEmNWDUTYxBBjeQAAJeJeztYgw4AAAAAAElFTkSuQmCC'
+const TRAY_ICON_32 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAd0lEQVR4nO3OsQ3AIAxEUbbIdFktq5IqJeF8PguDbIkCyfBfazWGue6nI2dZWA5hwxKIKk4h1HETIioOI5YCRo++QSOz/ZwAz4fMfgH2BljvBSjAHoAZQhUexlMAEIT3/MZTACIRUDwKYYqrEVRcAXGHWYg8fPS81obccHMhnpQAAAAASUVORK5CYII='
+
+function fallbackTrayIcon() {
+  const icon = nativeImage.createFromDataURL(TRAY_ICON_16)
+  icon.addRepresentation({ scaleFactor: 2, dataURL: TRAY_ICON_32 })
+  return icon
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
+function quitApp() {
+  isQuitting = true
+  app.quit()
+}
+
+function hideToTray(win) {
+  if (win.isDestroyed()) return
+  // 托盘没建起来时继续隐藏会让应用彻底失联，这种情况按直接关闭处理。
+  if (!tray) { win.destroy(); return }
+  win.hide()
+}
+
+// 关闭窗口不是退出应用：记住的选择直接执行，没记住就每次询问。
+// 选择“直接关闭”才真的退出；选择“最小化到托盘”只隐藏窗口，后台任务继续跑。
+async function handleWindowClose(win) {
+  if (closePromptOpen) return
+  closePromptOpen = true
+  try {
+    if (windowCloseAction === 'tray') { hideToTray(win); return }
+    if (windowCloseAction === 'quit') { quitApp(); return }
+    if (win.isDestroyed()) return
+    const result = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: '关闭 Whaleagent',
+      message: '关闭窗口时要怎么做？',
+      detail: '最小化到托盘后，自动读取、互动监听和日记会在后台继续运行；直接关闭会退出程序。',
+      buttons: ['最小化到托盘', '直接关闭'],
+      defaultId: 0,
+      cancelId: 0,
+      checkboxLabel: '下次不再询问',
+      checkboxChecked: false,
+      noLink: true,
+    })
+    const chosen = result.response === 1 ? 'quit' : 'tray'
+    if (result.checkboxChecked) {
+      try { await saveWindowCloseAction(chosen) }
+      catch (error) { logDiagnostic('warn', 'window-close-action-save-failed', errorSummary(error)) }
+    }
+    if (chosen === 'quit') quitApp()
+    else hideToTray(win)
+  } catch (error) {
+    // 对话框本身失败时退到最小化，至少不丢窗口，也不误退出。
+    logDiagnostic('warn', 'window-close-prompt-failed', errorSummary(error))
+    hideToTray(win)
+  } finally {
+    closePromptOpen = false
+  }
+}
+
+async function createTray() {
+  if (tray) return
+  let icon
+  try {
+    icon = await app.getFileIcon(process.execPath, { size: 'small' })
+    if (!icon || icon.isEmpty()) icon = fallbackTrayIcon()
+  } catch {
+    icon = fallbackTrayIcon()
+  }
+  tray = new Tray(icon)
+  tray.setToolTip('Whaleagent')
+  // 左键双击唤回主界面；右键每次现拼菜单，才能反映“关闭时总是询问”是否还在。
+  tray.on('double-click', () => showMainWindow())
+  tray.on('right-click', () => {
+    if (!tray) return
+    const template = [{ label: '显示主界面', click: () => showMainWindow() }]
+    if (windowCloseAction !== 'ask') {
+      template.push({
+        label: '关闭时总是询问',
+        click: () => { void saveWindowCloseAction('ask').catch((error) => logDiagnostic('warn', 'window-close-action-save-failed', errorSummary(error))) },
+      })
+    }
+    template.push({ type: 'separator' }, { label: '退出', click: () => quitApp() })
+    tray.popUpContextMenu(Menu.buildFromTemplate(template))
+  })
 }
 
 const PROFILE_RESET_FLAG = '--whaleagent-profile-reset'
@@ -1704,11 +1835,18 @@ app.whenReady().then(async () => {
   } catch (error) {
     logDiagnostic('error', 'portable-migration-failed', errorSummary(error))
   }
+  // 移除 Electron 自带的英文菜单：File/Edit/View/Window/Help 和它们附带的
+  // Ctrl+R、Ctrl+Shift+I 等加速键一并消失。界面内没有任何依赖菜单的操作。
+  Menu.setApplicationMenu(null)
   registerIpc()
   createWindow()
+  try { await createTray() }
+  catch (error) { logDiagnostic('warn', 'tray-create-failed', errorSummary(error)) }
   // 恢复上次下载并校验通过、还没安装的更新包：界面启动时就显示「待重启」。
   void UPDATER.restore()
-  configureInteractionMonitor(await readSettings())
+  const startupSettings = await readSettings()
+  windowCloseAction = startupSettings.window.closeAction
+  configureInteractionMonitor(startupSettings)
   void tickReadingAuto()
   readingAutoTimer = setInterval(() => void tickReadingAuto(), 30_000)
   readingAutoTimer.unref?.()
@@ -1720,10 +1858,17 @@ app.whenReady().then(async () => {
   diaryAutoTimer = setInterval(() => void tickDiaryAuto(), 30_000)
   diaryAutoTimer.unref?.()
   logDiagnostic('info', 'app-start', `version=${app.getVersion()} platform=${process.platform} dataMode=${DATA_LAYOUT.mode} dataDir=${DATA_LAYOUT.rootDir}`)
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  app.on('activate', () => showMainWindow())
 })
 
 app.on('before-quit', () => {
+  // 更新安装、托盘退出、系统关机都会走到这里：必须先标记退出，
+  // 否则窗口的 close 事件会把进程拦下来弹“最小化还是关闭”。
+  isQuitting = true
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
   if (interactionTimer) clearInterval(interactionTimer)
   interactionTimer = null
   if (readingAutoTimer) clearInterval(readingAutoTimer)
@@ -1733,5 +1878,10 @@ app.on('before-quit', () => {
   clearActiveQr()
 })
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('window-all-closed', () => {
+  if (process.platform === 'darwin') return
+  // 托盘还在、且不是主动退出时，窗口被销毁（例如渲染进程崩溃）也不结束后台任务。
+  if (tray && !isQuitting) return
+  app.quit()
+})
 

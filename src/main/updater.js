@@ -30,6 +30,7 @@ export const UPDATE_DIR_NAME = 'update'
 export const RELEASES_PAGE_URL = `https://github.com/${UPDATE_REPOSITORY}/releases`
 export const MANIFEST_URL = `https://github.com/${UPDATE_REPOSITORY}/releases/latest/download/${UPDATE_MANIFEST_NAME}`
 export const RELEASES_API_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases?per_page=20`
+export const RELEASES_LATEST_API_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`
 // 程序目录里必须存在的两个文件：缺任何一个都说明这个包不是 Whaleagent。
 export const REQUIRED_PACKAGE_FILES = ['Whaleagent.exe', 'resources/app.asar']
 // 安装脚本要等的旧进程上限。Electron 的子进程通常几百毫秒内退完。
@@ -127,6 +128,39 @@ export function validateManifest(input, { repository = UPDATE_REPOSITORY } = {})
     notes,
     downloadUrl: `https://github.com/${manifestRepository}/releases/download/${encodeURIComponent(tag)}/${asset}`,
     pageUrl: `https://github.com/${manifestRepository}/releases/tag/${encodeURIComponent(tag)}`,
+  }
+}
+
+// 发行版清单偶尔会漏传（例如 0.13.0 只上传了 zip）。此时用 GitHub API 返回的
+// 资产摘要生成等价清单：资产名、大小、sha256:digest 都由 GitHub 提供，与清单里的
+// 校验值同等可信。只在清单明确 404 时走这条路；清单存在但格式错误一律直接失败，
+// 避免把被篡改或损坏的清单静默绕过去。
+export function manifestFromRelease(release) {
+  const data = release && typeof release === 'object' ? release : {}
+  if (data.draft) throw new Error('最新发行版还是草稿。')
+  const tag = String(data.tag_name ?? '').trim()
+  const version = normalizeVersion(tag)
+  if (!version) throw new Error('最新发行版的版本号无效。')
+  if (!/^[0-9A-Za-z._-]{1,60}$/.test(tag)) throw new Error('最新发行版的版本标签无效。')
+  const assets = Array.isArray(data.assets) ? data.assets : []
+  const asset = assets.find((item) => String(item?.name ?? '') === UPDATE_ASSET_NAME)
+  if (!asset) throw new Error(`最新发行版缺少程序包 ${UPDATE_ASSET_NAME}。`)
+  const size = Number(asset.size ?? 0)
+  if (!Number.isSafeInteger(size) || size < MIN_PACKAGE_BYTES) throw new Error('最新发行版的程序包大小无效。')
+  const digest = String(asset.digest ?? '').trim().toLowerCase()
+  const match = /^sha256:([0-9a-f]{64})$/.exec(digest)
+  if (!match) throw new Error('最新发行版缺少更新清单，且程序包没有可用的 SHA-256 摘要。')
+  return {
+    repository: UPDATE_REPOSITORY,
+    version,
+    tag,
+    asset: UPDATE_ASSET_NAME,
+    sha256: match[1],
+    size,
+    publishedAt: String(data.published_at ?? '').trim().slice(0, 40),
+    notes: String(data.body ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 60),
+    downloadUrl: `https://github.com/${UPDATE_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${UPDATE_ASSET_NAME}`,
+    pageUrl: `https://github.com/${UPDATE_REPOSITORY}/releases/tag/${encodeURIComponent(tag)}`,
   }
 }
 
@@ -577,29 +611,45 @@ export function createUpdater({
   }
 
   // 先走 releases/latest/download 静态直连（不占 GitHub API 配额、不会被限流），
-  // 再取发行版列表给“目标版本”下拉用。清单失败时如实报错，不做静默降级：
-  // 没有清单就没有校验值，装不了。
+  // 再取发行版列表给“目标版本”下拉用。清单明确 404 时用 API 资产摘要兜底；
+  // 清单存在但内容不合法仍然直接失败，不能把损坏或被改过的清单静默绕过去。
   async function check() {
     if (!supported) return snapshot()
     state.phase = 'checking'
     state.error = ''
     try {
-      const latest = await fetchManifest(MANIFEST_URL)
+      let latest
+      let latestRelease = null
+      try {
+        latest = await fetchManifest(MANIFEST_URL)
+      } catch (error) {
+        if (String(error?.message) !== 'HTTP 404') throw error
+        logger('warn', 'update-manifest-missing', '静态清单 404，改用 GitHub API 资产摘要。')
+        try {
+          latestRelease = await fetchJson(RELEASES_LATEST_API_URL)
+          latest = manifestFromRelease(latestRelease)
+        } catch (apiError) {
+          throw new Error(`更新清单不可用（HTTP 404），且无法从 GitHub API 读取资产摘要：${String(apiError?.message || apiError).slice(0, 160)}`)
+        }
+        logger('warn', 'update-manifest-fallback', `version=${latest.version}`)
+      }
       try {
         state.releases = normalizeReleaseList(await fetchJson(RELEASES_API_URL), { currentVersion: state.currentVersion })
       } catch (error) {
         logger('warn', 'update-releases-unavailable', String(error?.message || error).slice(0, 200))
-        state.releases = [{
-          tag: latest.tag,
-          version: latest.version,
-          publishedAt: latest.publishedAt,
-          prerelease: false,
-          installable: true,
-          current: compareVersions(latest.version, state.currentVersion) === 0,
-          newer: compareVersions(latest.version, state.currentVersion) > 0,
-          pageUrl: latest.pageUrl,
-          notes: latest.notes,
-        }]
+        state.releases = latestRelease
+          ? normalizeReleaseList([latestRelease], { currentVersion: state.currentVersion })
+          : [{
+            tag: latest.tag,
+            version: latest.version,
+            publishedAt: latest.publishedAt,
+            prerelease: false,
+            installable: true,
+            current: compareVersions(latest.version, state.currentVersion) === 0,
+            newer: compareVersions(latest.version, state.currentVersion) > 0,
+            pageUrl: latest.pageUrl,
+            notes: latest.notes,
+          }]
       }
       state.latest = latest
       state.checkedAt = now()

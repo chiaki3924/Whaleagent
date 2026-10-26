@@ -7,6 +7,7 @@ import path from 'node:path'
 import {
   APPLY_UPDATE_SCRIPT,
   MANIFEST_URL,
+  RELEASES_LATEST_API_URL,
   UPDATE_ASSET_NAME,
   UPDATE_REPOSITORY,
   applyScriptFileContent,
@@ -15,6 +16,7 @@ import {
   compareVersions,
   createUpdater,
   isSafeZipEntry,
+  manifestFromRelease,
   manifestUrlForTag,
   normalizeReleaseList,
   normalizeVersion,
@@ -205,6 +207,97 @@ test('检查更新：已是最新版本时不报可更新', async () => {
   assert.equal(status.phase, 'idle')
   assert.equal(status.updateAvailable, false)
   assert.match(status.error, /最新/)
+})
+
+function latestRelease(overrides = {}) {
+  return {
+    tag_name: 'v0.13.0',
+    draft: false,
+    prerelease: false,
+    published_at: '2026-10-25T12:49:08Z',
+    body: 'Whaleagent 0.13.0\n- 开机启动',
+    assets: [{ name: UPDATE_ASSET_NAME, size: PACKAGE_BYTES, digest: `sha256:${SHA}` }],
+    ...overrides,
+  }
+}
+
+test('清单缺失时从发行版资产摘要生成清单', () => {
+  const manifestFromApi = manifestFromRelease(latestRelease())
+  assert.equal(manifestFromApi.version, '0.13.0')
+  assert.equal(manifestFromApi.tag, 'v0.13.0')
+  assert.equal(manifestFromApi.size, PACKAGE_BYTES)
+  assert.equal(manifestFromApi.sha256, SHA)
+  assert.equal(manifestFromApi.downloadUrl, `https://github.com/${UPDATE_REPOSITORY}/releases/download/v0.13.0/${UPDATE_ASSET_NAME}`)
+  assert.deepEqual(manifestFromApi.notes, ['Whaleagent 0.13.0', '- 开机启动'])
+
+  const rejects = [
+    [{ draft: true }, /草稿/],
+    [{ tag_name: 'latest' }, /版本号无效/],
+    [{ assets: [] }, /缺少程序包/],
+    [{ assets: [{ name: UPDATE_ASSET_NAME, size: 10, digest: `sha256:${SHA}` }] }, /大小无效/],
+    [{ assets: [{ name: UPDATE_ASSET_NAME, size: PACKAGE_BYTES }] }, /没有可用的 SHA-256/],
+    [{ assets: [{ name: UPDATE_ASSET_NAME, size: PACKAGE_BYTES, digest: 'sha256:xyz' }] }, /没有可用的 SHA-256/],
+  ]
+  for (const [patch, expected] of rejects) {
+    assert.throws(() => manifestFromRelease(latestRelease(patch)), expected, JSON.stringify(patch))
+  }
+})
+
+test('检查更新：静态清单 404 时用 API 资产摘要继续检查', async () => {
+  const root = await tempDir()
+  const requested = []
+  const { updater, calls } = createTestUpdater({
+    root,
+    currentVersion: '0.12.0',
+    fetchImpl: async (url) => {
+      requested.push(url)
+      if (url === MANIFEST_URL) return new Response('Not Found', { status: 404 })
+      if (url === RELEASES_LATEST_API_URL) return jsonResponse(latestRelease())
+      throw new Error(`unexpected url ${url}`)
+    },
+  })
+  const status = await updater.check()
+  assert.equal(status.phase, 'available')
+  assert.equal(status.updateAvailable, true)
+  assert.equal(status.latest.version, '0.13.0')
+  assert.equal(status.latest.sha256, SHA)
+  assert.equal(status.releases.length, 1)
+  assert.equal(status.releases[0].installable, true)
+  assert.ok(requested.includes(RELEASES_LATEST_API_URL))
+  assert.ok(calls.some((entry) => entry.event === 'update-manifest-fallback'))
+})
+
+test('检查更新：清单存在但格式错误时直接失败，不静默改用 API', async () => {
+  const root = await tempDir()
+  let apiCalls = 0
+  const { updater } = createTestUpdater({
+    root,
+    fetchImpl: async (url) => {
+      if (url === MANIFEST_URL) return jsonResponse(manifest({ sha256: 'not-a-hash' }))
+      apiCalls += 1
+      return jsonResponse(latestRelease())
+    },
+  })
+  const status = await updater.check()
+  assert.equal(status.phase, 'error')
+  assert.match(status.error, /校验值/)
+  assert.equal(apiCalls, 0)
+})
+
+test('检查更新：清单和 API 都不可用时报出两边原因', async () => {
+  const root = await tempDir()
+  const { updater } = createTestUpdater({
+    root,
+    fetchImpl: async (url) => {
+      if (url === MANIFEST_URL) return new Response('Not Found', { status: 404 })
+      if (url === RELEASES_LATEST_API_URL) return new Response('Forbidden', { status: 403 })
+      throw new Error(`unexpected url ${url}`)
+    },
+  })
+  const status = await updater.check()
+  assert.equal(status.phase, 'error')
+  assert.match(status.error, /HTTP 404/)
+  assert.match(status.error, /HTTP 403/)
 })
 
 test('检查更新：清单格式错误直接失败，不做降级', async () => {

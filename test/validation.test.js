@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanBaseUrl, validateModelConnectionSettings, validateReport, validateReportName, normalizeReportMetadata, normalizePreferences, isModelReady } from '../src/main/validation.js'
+import { cleanBaseUrl, validateModelConnectionSettings, validateReport, validateReportName, normalizeReportMetadata, normalizePreferences, isModelReady, normalizeWindowConfig } from '../src/main/validation.js'
 
 test('requires a model service API base URL', () => {
   assert.throws(() => cleanBaseUrl(''), /请输入有效的模型服务 API 地址/)
@@ -38,6 +38,15 @@ test('model readiness also requires a model name', () => {
   assert.equal(isModelReady({ baseUrl: 'https://api.example.com/v1', model: '', hasApiKey: true }), false)
   assert.equal(isModelReady({ baseUrl: 'https://api.example.com/v1', model: 'm', hasApiKey: false }), false)
   assert.equal(isModelReady({ baseUrl: 'https://api.example.com/v1', model: 'm', hasApiKey: true }), true)
+})
+
+test('关闭窗口行为只接受询问、托盘、退出三种值', () => {
+  assert.deepEqual(normalizeWindowConfig({ closeAction: 'ask' }), { closeAction: 'ask' })
+  assert.deepEqual(normalizeWindowConfig({ closeAction: 'tray' }), { closeAction: 'tray' })
+  assert.deepEqual(normalizeWindowConfig({ closeAction: 'quit' }), { closeAction: 'quit' })
+  assert.deepEqual(normalizeWindowConfig({ closeAction: 'destroy' }), { closeAction: 'ask' })
+  assert.deepEqual(normalizeWindowConfig({}), { closeAction: 'ask' })
+  assert.deepEqual(normalizeWindowConfig(null), { closeAction: 'ask' })
 })
 
 test('normalizes and bounds local screening preferences', () => {

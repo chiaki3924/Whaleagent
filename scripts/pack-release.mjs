@@ -105,7 +105,7 @@ async function uploadAsset(token, uploadUrl, filePath, name) {
   return JSON.parse(text)
 }
 
-async function publish({ zipPath, manifestPath, notes }) {
+async function publish({ zipPath, manifestPath, sha256, notes }) {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN
   if (!token) throw new Error('缺少 GH_TOKEN 环境变量；也可以不带 --publish，手动在网页上传两个文件。')
   const existing = await fetchJson(`https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/tags/${tag}`, {
@@ -145,6 +145,27 @@ async function publish({ zipPath, manifestPath, notes }) {
   await uploadAsset(token, release.upload_url, zipPath, UPDATE_ASSET_NAME)
   // 清单最后上传：先有大包再有小清单，正在检查更新的客户端不会拿到指向半成品的地址。
   await uploadAsset(token, release.upload_url, manifestPath, UPDATE_MANIFEST_NAME)
+
+  // 上传接口返回成功不代表发行版里两个资产都齐：0.13.0 就出现过只有 zip、
+  // 客户端检查更新一直 404 的情况。发布后按发行版实际状态再核对一遍。
+  const published = await fetchJson(`https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/tags/${tag}`, {
+    headers: { Authorization: `token ${token}` },
+  })
+  const assets = Array.isArray(published.assets) ? published.assets : []
+  const expected = [
+    { name: UPDATE_ASSET_NAME, filePath: zipPath, sha256 },
+    { name: UPDATE_MANIFEST_NAME, filePath: manifestPath, sha256: '' },
+  ]
+  for (const item of expected) {
+    const asset = assets.find((entry) => entry.name === item.name)
+    if (!asset) throw new Error(`发布后自检失败：发行版 ${tag} 里没有 ${item.name}。`)
+    const size = (await fsp.stat(item.filePath)).size
+    if (Number(asset.size) !== size) throw new Error(`发布后自检失败：${item.name} 大小不一致（${asset.size} ≠ ${size}）。`)
+    if (item.sha256 && asset.digest && asset.digest !== `sha256:${item.sha256}`) {
+      throw new Error(`发布后自检失败：${item.name} 摘要不一致。`)
+    }
+    log(`  自检通过 ${item.name}`)
+  }
   return release.html_url
 }
 
@@ -191,7 +212,7 @@ try {
   log(`更新清单 → ${manifestPath}`)
 
   if (arg('publish', false) === true) {
-    const htmlUrl = await publish({ zipPath, manifestPath, notes })
+    const htmlUrl = await publish({ zipPath, manifestPath, sha256, notes })
     log(`已发布：${htmlUrl}`)
   } else {
     log('未发布（加 --publish 并设置 GH_TOKEN 可直接上传）。')
